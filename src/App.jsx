@@ -48,7 +48,13 @@ import {
   unlockVault,
 } from './lib/vaultCrypto.js'
 import { safeHttpUrl } from './lib/importer.js'
-import { countPasswords, passwordHealth, passwordRisk } from './lib/passwordRisk.js'
+import {
+  countPasswords,
+  masterPasswordHealth,
+  passwordHealth,
+  passwordRisk,
+  vaultHealthScore,
+} from './lib/passwordRisk.js'
 
 const emptyEntry = {
   name: '',
@@ -344,11 +350,8 @@ function VaultView({ entries, search, setSearch, filter, setFilter, selectedId, 
       if (filter === 'risk') {
         const aRisk = passwordRisk(a, passwordCounts)
         const bRisk = passwordRisk(b, passwordCounts)
-        const aDoubleFlag = Number(aRisk.lowStrength && aRisk.stale)
-        const bDoubleFlag = Number(bRisk.lowStrength && bRisk.stale)
-        return bDoubleFlag - aDoubleFlag
+        return Number(bRisk.reused) - Number(aRisk.reused)
           || aRisk.health.value - bRisk.health.value
-          || (bRisk.ageDays ?? Number.MAX_SAFE_INTEGER) - (aRisk.ageDays ?? Number.MAX_SAFE_INTEGER)
       }
       return Number(b.favorite) - Number(a.favorite)
     })
@@ -357,7 +360,7 @@ function VaultView({ entries, search, setSearch, filter, setFilter, selectedId, 
 
   const selected = visibleEntries.find((entry) => entry.id === selectedId) || visibleEntries[0]
   const issues = entries.filter((entry) => passwordRisk(entry, passwordCounts).atRisk).length
-  const score = entries.length ? Math.max(48, Math.round(100 - (issues / entries.length) * 42)) : 100
+  const score = vaultHealthScore(entries, passwordCounts)
 
   useEffect(() => setMobileDetailOpen(false), [filter, search])
   useEffect(() => {
@@ -416,21 +419,20 @@ function SecurityView({ entries, onBackToVault }) {
   const passwordCounts = useMemo(() => countPasswords(entries), [entries])
   const risks = entries.map((entry) => ({ entry, risk: passwordRisk(entry, passwordCounts) }))
     .filter(({ risk }) => risk.atRisk)
-    .sort((a, b) => Number(b.risk.lowStrength && b.risk.stale) - Number(a.risk.lowStrength && a.risk.stale)
-      || a.risk.health.value - b.risk.health.value
-      || (b.risk.ageDays ?? Number.MAX_SAFE_INTEGER) - (a.risk.ageDays ?? Number.MAX_SAFE_INTEGER))
-  const lowStrengthCount = risks.filter(({ risk }) => risk.lowStrength).length
-  const staleCount = risks.filter(({ risk }) => risk.stale).length
+    .sort((a, b) => Number(b.risk.reused) - Number(a.risk.reused)
+      || a.risk.health.value - b.risk.health.value)
+  const reusedCount = risks.filter(({ risk }) => risk.reused).length
+  const weakCount = risks.filter(({ risk }) => risk.lowStrength && !risk.reused).length
   const healthyCount = entries.length - risks.length
-  const score = entries.length ? Math.max(48, Math.round(100 - (risks.length / entries.length) * 42)) : 100
+  const score = vaultHealthScore(entries, passwordCounts)
   return (
     <main className="security-view page-enter">
-      <header className="page-heading security-heading"><div><p className="eyebrow"><ShieldCheck size={14} /> Local security check</p><h1>A quiet check on<br /><em>your digital doors.</em></h1><p className="heading-copy">Passwords are marked at risk when their strength is below 70% or they have not changed in 30 days. Everything is checked locally.</p></div><div className="giant-score"><span>{score}</span><small>out of 100</small><i style={{ '--score': `${score * 3.6}deg` }} /></div></header>
+      <header className="page-heading security-heading"><div><p className="eyebrow"><ShieldCheck size={14} /> Local security check</p><h1>A quiet check on<br /><em>your digital doors.</em></h1><p className="heading-copy">Hush looks for reuse, predictable patterns, account information, common passwords, and weak length. Password age is informational only, and this analysis stays local.</p></div><div className="giant-score"><span>{score}</span><small>out of 100</small><i style={{ '--score': `${score * 3.6}deg` }} /></div></header>
       <div className="security-grid">
         <section className="security-overview">
-          <div className="security-stat good"><span><Shield size={21} /></span><strong>{healthyCount}</strong><p>Looking good</p><small>No current risk flags</small></div>
-          <div className="security-stat warn"><span><Clock3 size={21} /></span><strong>{staleCount}</strong><p>30+ days unchanged</p><small>Your age-based rule</small></div>
-          <div className="security-stat danger"><span><AlertTriangle size={21} /></span><strong>{lowStrengthCount}</strong><p>Below 70%</p><small>Weak or reused</small></div>
+          <div className="security-stat good"><span><Shield size={21} /></span><strong>{healthyCount}</strong><p>Strong & unique</p><small>No current local risk flags</small></div>
+          <div className="security-stat warn"><span><Copy size={21} /></span><strong>{reusedCount}</strong><p>Reused</p><small>Same password on multiple entries</small></div>
+          <div className="security-stat danger"><span><AlertTriangle size={21} /></span><strong>{weakCount}</strong><p>Weak patterns</p><small>Predictable, contextual, or too short</small></div>
         </section>
         <section className="security-story">
           <div className="story-seal"><BrandMark /></div>
@@ -442,10 +444,10 @@ function SecurityView({ entries, onBackToVault }) {
         <section className="attention-list">
           <div className="section-title"><div><p className="eyebrow">Worth a look</p><h2>Passwords at risk.</h2></div><span>{risks.length}</span></div>
           {risks.slice(0, 5).map(({ entry, risk }) => {
-            const badge = risk.lowStrength ? `${risk.health.value}%` : risk.ageDays === null ? 'Unknown' : `${risk.ageDays}d`
+            const badge = risk.reused ? 'Reused' : `${risk.health.value}%`
             return <button type="button" key={entry.id} onClick={() => onBackToVault(entry.id)}><span className="service-avatar" style={{ '--avatar-hue': avatarHue(entry.name) }}>{initials(entry.name)}</span><span><strong>{entry.name}</strong><small>{risk.reason}</small></span><b className={risk.tone}>{badge}</b><ChevronRight size={17} /></button>
           })}
-          {!risks.length && <div className="all-clear"><Check size={22} /><strong>All clear</strong><span>No password crosses your risk rule.</span></div>}
+          {!risks.length && <div className="all-clear"><Check size={22} /><strong>All clear</strong><span>Every saved password passes the current local checks.</span></div>}
         </section>
       </div>
     </main>
@@ -523,11 +525,12 @@ function Onboarding({ onClose, onCreate, busy, sampleCount }) {
   const [confirm, setConfirm] = useState('')
   const [keepSamples, setKeepSamples] = useState(true)
   const [error, setError] = useState('')
-  const ready = password.length >= 10 && password === confirm
+  const masterHealth = useMemo(() => masterPasswordHealth(password), [password])
+  const ready = masterHealth.acceptable && password === confirm
 
   async function submit(event) {
     event.preventDefault()
-    if (password.length < 10) return setError('Use at least 10 characters—a longer phrase is even better.')
+    if (!masterHealth.acceptable) return setError('Use a stronger master password—at least 14 characters and avoid common words, obvious sequences, repeated patterns, or dates.')
     if (password !== confirm) return setError('Those passwords do not match yet.')
     setError('')
     try {
@@ -536,6 +539,18 @@ function Onboarding({ onClose, onCreate, busy, sampleCount }) {
       setError(createError.message || 'This browser could not create the encrypted vault.')
     }
   }
+
+  const masterLabel = !password
+    ? 'Start with a long passphrase'
+    : password.length < 14
+      ? 'Keep going'
+      : !masterHealth.acceptable
+        ? 'Too predictable'
+        : masterHealth.value < 80
+          ? 'Good'
+          : masterHealth.value < 95
+            ? 'Strong'
+            : 'Excellent'
 
   return (
     <div className="onboarding-backdrop">
@@ -555,9 +570,9 @@ function Onboarding({ onClose, onCreate, busy, sampleCount }) {
             <p className="eyebrow"><LockKeyhole size={14} /> Create your vault</p>
             <h1 id="onboarding-title">Choose the one key<br /><em>only you will know.</em></h1>
             <p>There is no password recovery. A memorable passphrase is safer than something short and clever.</p>
-            <label className="input-field"><span>Master password</span><input id="new-master-password" autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" placeholder="A long, memorable phrase" aria-describedby="password-guidance password-strength" aria-invalid={Boolean(error && password.length < 10)} /></label>
-            <div className="password-meter" id="password-strength" aria-live="polite"><i style={{ width: `${Math.min(100, password.length * 6)}%` }} /><span>{password.length < 10 ? 'Keep going' : password.length < 16 ? 'Good' : 'Beautifully strong'}</span></div>
-            <p id="password-guidance" className="visually-hidden">Use at least 10 characters. A longer memorable phrase is recommended.</p>
+            <label className="input-field"><span>Master password</span><input id="new-master-password" autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" placeholder="A long, memorable phrase" aria-describedby="password-guidance password-strength" aria-invalid={Boolean(error && !masterHealth.acceptable)} /></label>
+            <div className="password-meter" id="password-strength" aria-live="polite"><i style={{ width: `${masterHealth.value}%` }} /><span>{masterLabel}</span></div>
+            <p id="password-guidance" className="visually-hidden">Use at least 14 characters and avoid predictable words, sequences, repeated patterns, and dates. A longer memorable passphrase is recommended.</p>
             <label className="input-field"><span>Confirm password</span><input type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" placeholder="Type it once more" aria-describedby={(error || (confirm && password !== confirm)) ? 'create-password-error' : undefined} aria-invalid={Boolean(confirm && password !== confirm)} /></label>
             {sampleCount > 0 && <label className="keep-samples"><input type="checkbox" checked={keepSamples} onChange={(event) => setKeepSamples(event.target.checked)} /><span><Check size={13} /></span><div><strong>Keep {sampleCount} sample {sampleCount === 1 ? 'item' : 'items'}</strong><small>Your own demo additions are kept either way.</small></div></label>}
             {(error || (confirm && password !== confirm)) && <p className="inline-error" id="create-password-error" role="alert"><AlertTriangle size={15} /> {error || 'Those passwords do not match yet.'}</p>}
