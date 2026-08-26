@@ -5,6 +5,8 @@ import {
   decodePairingCode,
   deserializeEnvelope,
   encodePairingCode,
+  pairingCodeFromQr,
+  pairingCodeToQr,
   sameVault,
   serializeEnvelope,
 } from '../src/lib/vaultTransfer.js'
@@ -43,4 +45,16 @@ test('encodes typed offer and answer pairing codes', () => {
   assert.equal(code.startsWith('HUSH1-'), true)
   assert.deepEqual(decodePairingCode(code, 'offer'), offer)
   assert.throws(() => decodePairingCode(code, 'answer'), /valid Hush answer/)
+})
+
+test('compresses pairing codes for QR and restores the original code', () => {
+  const offer = { type: 'offer', sdp: `v=0\r\n${'a=candidate:1 1 udp 2122260223 192.168.1.2 54321 typ host\r\n'.repeat(40)}` }
+  const code = encodePairingCode('offer', offer)
+  const qrValue = pairingCodeToQr(code)
+
+  assert.equal(qrValue.startsWith('HUSHQR1-'), true)
+  assert.equal(qrValue.length < code.length, true)
+  assert.equal(pairingCodeFromQr(qrValue), code)
+  assert.equal(pairingCodeFromQr(code), code)
+  assert.throws(() => pairingCodeFromQr('https://example.com'), /not created by Hush/)
 })

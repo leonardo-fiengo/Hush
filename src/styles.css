@@ -2141,6 +2141,7 @@ h2 em {
 .setting-row select { height: 37px; min-width: 125px; padding: 0 10px; font-family: var(--mono); font-size: 8px; border: 1px solid #cdcec4; border-radius: 9px; background: #fff; }
 .settings-action { display: flex; align-items: center; width: 100%; min-height: 41px; gap: 7px; margin-top: 16px; padding: 0 12px; font-size: 9px; font-weight: 700; border: 0; border-radius: 10px; background: #e9eae1; }
 .settings-action svg:last-child { margin-left: auto; }
+.settings-action.logout-action { margin-top: 8px; color: #943f34; background: rgba(239,106,85,.1); }
 .honest-note { display: flex; align-items: flex-start; gap: 9px; margin-top: 24px; padding: 15px; color: #666860; border-radius: 12px; background: #e8e9df; }
 .honest-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--iris); }
 .honest-note p { margin: 0; font-size: 8px; line-height: 1.7; }
@@ -2198,13 +2199,35 @@ h2 em {
 .pairing-steps .eyebrow { color: var(--acid); }
 .pairing-steps h3 { margin-top: 10px; font-size: 26px; line-height: 1.08; }
 .pairing-steps > p:last-child { color: #9b9d94; }
-.pairing-fields { display: flex; align-items: flex-start; flex-direction: column; gap: 10px; padding: 27px 30px; }
+.pairing-fields { display: flex; align-items: stretch; flex-direction: column; gap: 13px; padding: 27px 30px; }
 .pairing-fields label { display: flex; width: 100%; flex-direction: column; gap: 7px; }
 .pairing-fields label > span { color: #6e7068; font-size: 8px; font-weight: 700; }
 .pairing-fields textarea { width: 100%; min-height: 70px; padding: 10px 11px; resize: vertical; color: #4b4d46; font-family: var(--mono); font-size: 7px; line-height: 1.45; word-break: break-all; border: 1px solid #cbcdc1; border-radius: 10px; background: #fff; }
 .pairing-fields .primary-button { align-self: flex-end; }
 .code-copy { display: inline-flex; align-items: center; min-height: 27px; gap: 5px; margin: -4px 0 3px; padding: 0; color: #56584f; font-size: 8px; border: 0; border-bottom: 1px solid #8e9087; background: transparent; }
 .waiting-note { display: flex; align-items: center; gap: 7px; margin: 4px 0 0; color: #51715f; font-family: var(--mono); font-size: 7px; }
+.pairing-stage { display: flex; align-items: center; gap: 10px; }
+.pairing-stage > span { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto; color: #fff; font-family: var(--mono); font-size: 9px; border-radius: 10px; background: var(--ink); }
+.pairing-stage > div { display: flex; min-width: 0; flex-direction: column; }
+.pairing-stage strong { font-size: 10px; }
+.pairing-stage small { margin-top: 3px; color: var(--muted); font-size: 7px; }
+.pairing-qr { display: flex; align-items: center; align-self: center; flex-direction: column; width: min(310px, 100%); padding: 10px 10px 9px; border: 1px solid #d5d7cb; border-radius: 17px; background: #fff; box-shadow: 0 10px 28px rgba(24,25,21,.07); }
+.pairing-qr img { display: block; width: 100%; height: auto; border-radius: 9px; }
+.pairing-qr p { display: flex; align-items: center; gap: 6px; margin: 7px 4px 0; color: #666860; font-size: 7px; line-height: 1.4; text-align: center; }
+.qr-loading,
+.qr-preparing { display: grid; place-items: center; min-height: 180px; }
+.qr-loading { width: 100%; background: repeating-linear-gradient(45deg, #f2f2ec 0 7px, #faf9f4 7px 14px); }
+.qr-loading span,
+.qr-preparing > span { width: 22px; height: 22px; border: 2px solid #d4d6ca; border-top-color: var(--iris); border-radius: 50%; animation: spin .8s linear infinite; }
+.qr-preparing { align-content: center; gap: 10px; color: var(--muted); font-family: var(--mono); font-size: 7px; }
+.qr-preparing p { margin: 0; }
+.pairing-fields .scan-action { width: 100%; align-self: stretch; }
+.pairing-fallback { width: 100%; margin-top: 2px; padding-top: 10px; border-top: 1px solid #dedfd6; }
+.pairing-fallback summary { width: fit-content; color: #686a62; font-size: 8px; font-weight: 700; cursor: pointer; }
+.pairing-fallback[open] { display: flex; flex-direction: column; gap: 10px; }
+.pairing-fallback[open] summary { margin-bottom: 4px; }
+.pairing-fallback .primary-button { margin-left: auto; }
+.qr-error { width: 100%; }
 .device-error { margin: 0 30px 18px; }
 .device-privacy { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 30px; color: #696b63; border-top: 1px solid #dedfd6; background: rgba(232,233,223,.65); }
 .device-privacy svg { flex: 0 0 auto; color: var(--green); }
@@ -2311,6 +2334,32 @@ h2 em {
 .confirm-dialog > p:not(.eyebrow) { margin: 12px 0 25px; color: var(--muted); font-size: 9px; line-height: 1.7; }
 .confirm-dialog > div { display: flex; justify-content: center; gap: 8px; }
 .danger-button { color: #fff; border-color: #aa493b; background: #b64e3f; }
+.logout-dialog { width: min(470px, calc(100% - 32px)); }
+.logout-dialog > p:not(.eyebrow) { margin-bottom: 16px; }
+.logout-dialog > .logout-warning { display: flex; align-items: flex-start; justify-content: flex-start; gap: 8px; margin-bottom: 18px; padding: 12px; color: #76564f; text-align: left; border-radius: 11px; background: rgba(239,106,85,.09); }
+.logout-warning svg { flex: 0 0 auto; color: #a3473a; }
+.logout-warning span { font-size: 8px; line-height: 1.55; }
+.logout-dialog > .input-field { display: flex; margin-bottom: 20px; text-align: left; }
+.logout-dialog .input-field input { min-height: 45px; padding: 0 12px; font-family: var(--mono); font-size: 13px; text-transform: uppercase; border: 1px solid #c9cbbf; border-radius: 11px; background: #fff; }
+.logout-dialog > .confirm-actions { display: flex; justify-content: center; gap: 8px; }
+
+.qr-scanner-backdrop { align-items: center; justify-content: center; padding: 20px; }
+.qr-scanner-dialog { width: min(520px, 100%); max-height: calc(100dvh - 40px); overflow: auto; border: 1px solid rgba(255,255,255,.15); border-radius: 24px; background: var(--card); box-shadow: var(--shadow-lg); }
+.qr-scanner-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 22px 24px 18px; }
+.qr-scanner-dialog header .eyebrow { margin-bottom: 7px; }
+.qr-scanner-dialog header h2 { margin: 0; font-size: 26px; letter-spacing: -1px; }
+.qr-camera { position: relative; aspect-ratio: 1.18; overflow: hidden; background: #0d0e0c; }
+.qr-camera video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.qr-camera-guide { position: absolute; inset: 16%; z-index: 3; pointer-events: none; }
+.qr-camera-guide span { position: absolute; width: 34px; height: 34px; border-color: var(--acid); }
+.qr-camera-guide span:nth-child(1) { top: 0; left: 0; border-top: 3px solid var(--acid); border-left: 3px solid var(--acid); }
+.qr-camera-guide span:nth-child(2) { top: 0; right: 0; border-top: 3px solid var(--acid); border-right: 3px solid var(--acid); }
+.qr-camera-guide span:nth-child(3) { bottom: 0; left: 0; border-bottom: 3px solid var(--acid); border-left: 3px solid var(--acid); }
+.qr-camera-guide span:nth-child(4) { right: 0; bottom: 0; border-right: 3px solid var(--acid); border-bottom: 3px solid var(--acid); }
+.qr-scanner-copy { display: flex; align-items: stretch; flex-direction: column; gap: 12px; padding: 18px 24px 22px; }
+.qr-scanner-copy > p:first-child { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.6; }
+.qr-file-button { cursor: pointer; }
+.qr-file-button input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 
 .onboarding-backdrop {
   align-items: center;
@@ -2442,6 +2491,8 @@ h2 em {
 .unlock-input button { display: grid; place-items: center; width: 39px; height: 39px; padding: 0; color: var(--ink); border: 0; border-radius: 10px; background: var(--acid); }
 .unlock-error { display: flex; align-items: center; gap: 6px; margin: 12px 0 0; color: #ef8b7d; font-size: 8px; }
 .unlock-note { display: flex; align-items: center; gap: 6px; margin-top: 18px; color: #797b72; font-family: var(--mono); font-size: 7px; }
+.lock-switch-vault { display: inline-flex; align-items: center; gap: 6px; margin-top: 17px; padding: 5px 0; color: #989a91; font-size: 8px; border: 0; border-bottom: 1px solid #55574f; background: transparent; }
+.lock-switch-vault:hover { color: #fff; border-color: #8b8d84; }
 .lock-notice { display: flex; align-items: center; gap: 7px; margin: 0 0 17px; padding: 9px 12px; color: var(--acid); font-size: 8px; line-height: 1.5; border: 1px solid #45483d; border-radius: 9px; background: rgba(217,249,104,.06); }
 .lock-footer { position: absolute; right: 34px; bottom: 28px; left: 34px; z-index: 3; display: flex; justify-content: space-between; color: #5f6159; font-family: var(--mono); font-size: 7px; letter-spacing: 1px; }
 .app-loading { display: grid; place-items: center; min-height: 100vh; background: var(--ink); }
@@ -2692,6 +2743,12 @@ h2 em {
   .pairing-fields { padding: 22px 20px; }
   .pairing-steps > button { margin-bottom: 24px; }
   .pairing-fields textarea { font-size: 16px; }
+  .pairing-qr { width: min(330px, 100%); }
+  .pairing-stage strong { font-size: 12px; }
+  .pairing-stage small,
+  .pairing-qr p,
+  .waiting-note { font-size: 9px; }
+  .pairing-fallback summary { min-height: 36px; font-size: 10px; }
   .device-privacy { min-height: 52px; padding: 8px 20px; }
   .device-error { margin-inline: 20px; }
   .install-row { align-items: stretch; flex-direction: column; }
@@ -2699,6 +2756,14 @@ h2 em {
   .technical > div { grid-template-columns: 1fr; }
   .backup-row { align-items: stretch; flex-direction: column; }
   .backup-row .secondary-button { width: 100%; }
+  .logout-dialog { max-height: calc(100dvh - 24px); padding: 26px 22px; overflow: auto; }
+  .logout-dialog > .confirm-actions { align-items: stretch; flex-direction: column-reverse; }
+  .logout-dialog .confirm-actions button { width: 100%; }
+  .qr-scanner-backdrop { align-items: flex-end; padding: 0; }
+  .qr-scanner-dialog { width: 100%; max-height: 94dvh; border-radius: 25px 25px 0 0; }
+  .qr-scanner-dialog > header { padding: 20px; }
+  .qr-camera { aspect-ratio: 1; }
+  .qr-scanner-copy { padding: 17px 20px 24px; }
   .onboarding-backdrop { align-items: flex-end; padding: 0; }
   .onboarding-card { display: block; width: 100%; max-height: 94vh; min-height: 0; overflow-y: auto; border-radius: 27px 27px 0 0; }
   .onboarding-visual { min-height: 190px; }

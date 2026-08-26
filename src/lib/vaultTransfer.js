@@ -1,5 +1,8 @@
+import { deflateSync, inflateSync, strFromU8, strToU8 } from 'fflate'
+
 const TRANSFER_FORMAT = 'hush-device-envelope-v1'
 const PAIRING_FORMAT = 'hush-pair-v1'
+const PAIRING_QR_PREFIX = 'HUSHQR1-'
 
 function toBytes(value) {
   if (value instanceof Uint8Array) return value
@@ -35,6 +38,15 @@ function base64UrlToText(value) {
   const normalized = value.replaceAll('-', '+').replaceAll('_', '/')
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
   return new TextDecoder().decode(base64ToBytes(padded))
+}
+
+function bytesToBase64Url(value) {
+  return bytesToBase64(value).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '')
+}
+
+function base64UrlToBytes(value) {
+  const normalized = value.replaceAll('-', '+').replaceAll('_', '/')
+  return base64ToBytes(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))
 }
 
 export function envelopeToTransfer(envelope) {
@@ -125,6 +137,26 @@ export function decodePairingCode(value, expectedType) {
     return decoded.description
   } catch {
     throw new Error(`That is not a valid Hush ${expectedType} code.`)
+  }
+}
+
+export function pairingCodeToQr(value) {
+  const compact = String(value || '').replace(/\s+/gu, '')
+  if (!compact.startsWith('HUSH1-')) throw new Error('That is not a Hush pairing code.')
+  const compressed = deflateSync(strToU8(compact), { level: 9 })
+  return `${PAIRING_QR_PREFIX}${bytesToBase64Url(compressed)}`
+}
+
+export function pairingCodeFromQr(value) {
+  try {
+    const compact = String(value || '').replace(/\s+/gu, '')
+    if (compact.startsWith('HUSH1-')) return compact
+    if (!compact.startsWith(PAIRING_QR_PREFIX)) throw new Error()
+    const pairingCode = strFromU8(inflateSync(base64UrlToBytes(compact.slice(PAIRING_QR_PREFIX.length))))
+    if (!pairingCode.startsWith('HUSH1-')) throw new Error()
+    return pairingCode
+  } catch {
+    throw new Error('That QR code was not created by Hush.')
   }
 }
 

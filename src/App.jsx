@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import QRCode from 'qrcode'
+import QrScanner from 'qr-scanner'
 import {
   AlertTriangle,
   ArrowRight,
+  Camera,
   Check,
   ChevronRight,
   CircleHelp,
@@ -25,6 +29,7 @@ import {
   Link2,
   Lock,
   LockKeyhole,
+  LogOut,
   Menu,
   Plus,
   Search,
@@ -48,6 +53,7 @@ import { sampleEntries } from './data/sampleVault.js'
 import {
   createVault,
   applyTransferredVault,
+  deleteStoredVault,
   hasStoredVault,
   installTransferredVault,
   ITERATIONS,
@@ -68,6 +74,9 @@ import {
 } from './lib/passwordRisk.js'
 import {
   compareEnvelopeVersions,
+  decodePairingCode,
+  pairingCodeFromQr,
+  pairingCodeToQr,
   sameVault,
   serializeEnvelope,
 } from './lib/vaultTransfer.js'
@@ -472,11 +481,117 @@ function SecurityView({ entries, onBackToVault }) {
   )
 }
 
+function PairingQr({ value, label }) {
+  const [source, setSource] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let active = true
+    setSource('')
+    setError('')
+    if (!value) return () => { active = false }
+    QRCode.toDataURL(pairingCodeToQr(value), {
+      errorCorrectionLevel: 'L',
+      margin: 2,
+      width: 360,
+      color: { dark: '#171813ff', light: '#ffffffff' },
+    }).then((image) => {
+      if (active) setSource(image)
+    }).catch(() => {
+      if (active) setError('This connection code is too large for a QR. Use the text code below.')
+    })
+    return () => { active = false }
+  }, [value])
+
+  if (error) return <p className="inline-error qr-error"><AlertTriangle size={15} /> {error}</p>
+  return (
+    <div className="pairing-qr">
+      {source ? <img src={source} alt={label} /> : <div className="qr-loading" aria-label="Creating QR code"><span /></div>}
+      <p><Camera size={14} /> {label}</p>
+    </div>
+  )
+}
+
+function QrScannerDialog({ expectedType, onClose, onScan }) {
+  const videoRef = useRef(null)
+  const deliveredRef = useRef(false)
+  const onScanRef = useRef(onScan)
+  const [error, setError] = useState('')
+  onScanRef.current = onScan
+  const dialogRef = useDialogFocus(onClose)
+
+  function deliverScan(value) {
+    try {
+      const code = pairingCodeFromQr(value)
+      decodePairingCode(code, expectedType)
+      if (deliveredRef.current) return true
+      deliveredRef.current = true
+      onScanRef.current(code)
+      return true
+    } catch (scanError) {
+      setError(scanError.message || `That is not a Hush ${expectedType} QR code.`)
+      return false
+    }
+  }
+
+  useEffect(() => {
+    let scanner
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('Camera access is unavailable here. Choose a QR image or paste the text code instead.')
+      return undefined
+    }
+    scanner = new QrScanner(
+      videoRef.current,
+      (result) => {
+        if (deliverScan(result.data)) scanner.stop()
+      },
+      {
+        preferredCamera: 'environment',
+        maxScansPerSecond: 10,
+        highlightScanRegion: true,
+        highlightCodeOutline: true,
+        returnDetailedScanResult: true,
+        onDecodeError: () => {},
+      },
+    )
+    scanner.start().catch(() => {
+      setError('Hush could not open the camera. Allow camera access, choose a QR image, or paste the code instead.')
+    })
+    return () => scanner.destroy()
+  }, [expectedType])
+
+  async function scanImage(event) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setError('')
+    try {
+      const result = await QrScanner.scanImage(file, { returnDetailedScanResult: true })
+      deliverScan(result.data)
+    } catch {
+      setError('Hush could not find a readable QR code in that image.')
+    } finally {
+      event.target.value = ''
+    }
+  }
+
+  return createPortal(
+    <div className="modal-backdrop qr-scanner-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section ref={dialogRef} className="qr-scanner-dialog modal-enter" role="dialog" aria-modal="true" aria-labelledby="qr-scanner-title">
+        <header><div><p className="eyebrow"><Camera size={14} /> Hush device link</p><h2 id="qr-scanner-title">Scan the {expectedType} QR.</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label="Close QR scanner"><X size={19} /></button></header>
+        <div className="qr-camera"><video ref={videoRef} muted playsInline /><div className="qr-camera-guide"><span /><span /><span /><span /></div></div>
+        <div className="qr-scanner-copy"><p>Point this device at the QR shown in Hush on your other device.</p>{error && <p className="inline-error" role="alert"><AlertTriangle size={15} /> {error}</p>}<label className="secondary-button qr-file-button"><Camera size={16} /> Choose a QR image<input type="file" accept="image/*" onChange={scanImage} /></label></div>
+      </section>
+    </div>,
+    document.body,
+  )
+}
+
 function DeviceSyncCard({ encrypted, linkState, peerName, onCreateOffer, onAcceptOffer, onAcceptAnswer, onDisconnect }) {
   const [mode, setMode] = useState('idle')
   const [offerCode, setOfferCode] = useState('')
   const [answerCode, setAnswerCode] = useState('')
   const [remoteCode, setRemoteCode] = useState('')
+  const [scannerType, setScannerType] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [answerAccepted, setAnswerAccepted] = useState(false)
@@ -503,11 +618,11 @@ function DeviceSyncCard({ encrypted, linkState, peerName, onCreateOffer, onAccep
     }
   }
 
-  async function createAnswerCode() {
+  async function createAnswerCode(code = remoteCode) {
     setBusy(true)
     setError('')
     try {
-      setAnswerCode(await onAcceptOffer(remoteCode))
+      setAnswerCode(await onAcceptOffer(code))
     } catch (answerError) {
       setError(answerError.message || 'Could not read that pairing code.')
     } finally {
@@ -515,11 +630,11 @@ function DeviceSyncCard({ encrypted, linkState, peerName, onCreateOffer, onAccep
     }
   }
 
-  async function finishPairing() {
+  async function finishPairing(code = remoteCode) {
     setBusy(true)
     setError('')
     try {
-      await onAcceptAnswer(remoteCode)
+      await onAcceptAnswer(code)
       setAnswerAccepted(true)
     } catch (answerError) {
       setError(answerError.message || 'Could not open the device link.')
@@ -528,21 +643,31 @@ function DeviceSyncCard({ encrypted, linkState, peerName, onCreateOffer, onAccep
     }
   }
 
+  function handleScannedCode(code) {
+    const scannedType = scannerType
+    setScannerType('')
+    setRemoteCode(code)
+    if (scannedType === 'offer') void createAnswerCode(code)
+    if (scannedType === 'answer') void finishPairing(code)
+  }
+
   function reset() {
     onDisconnect()
     setMode('idle')
     setOfferCode('')
     setAnswerCode('')
     setRemoteCode('')
+    setScannerType('')
     setError('')
     setAnswerAccepted(false)
   }
 
   return (
-    <section className="settings-card wide device-sync-card">
+    <>
+      <section className="settings-card wide device-sync-card">
       <div className="settings-card-title">
         <span><Link2 size={20} /></span>
-        <div><h2>Phone + laptop</h2><p>Pair two open Hush apps and move the encrypted vault directly between them.</p></div>
+        <div><h2>Phone + laptop</h2><p>Scan two private QR codes to link the open Hush apps directly.</p></div>
         <span className={`link-status ${connected ? 'online' : ''}`}><i />{connected ? 'Live' : linkState.state === 'pairing' ? 'Pairing' : 'Offline'}</span>
       </div>
 
@@ -554,37 +679,37 @@ function DeviceSyncCard({ encrypted, linkState, peerName, onCreateOffer, onAccep
         </div>
       ) : mode === 'idle' ? (
         <div className="device-sync-start">
-          <div><h3>Bring Hush to your phone.</h3><p>Open the same HTTPS Hush address on your phone, install it, then use two one-time codes to make a direct link. No Hush account is needed.</p></div>
-          <div><button type="button" className="primary-button" onClick={() => { setMode('offer'); void createOfferCode() }}><Laptop size={16} /> Create a code</button><button type="button" className="secondary-button" onClick={() => setMode('join')}><Smartphone size={16} /> Use a code</button></div>
+          <div><h3>Bring Hush to your phone.</h3><p>Open Hush on both devices. Start on the device that already has your vault, then scan each QR from the other screen. No account or cloud upload is needed.</p></div>
+          <div><button type="button" className="primary-button" onClick={() => { setMode('offer'); void createOfferCode() }}><Laptop size={16} /> Show link QR</button><button type="button" className="secondary-button" onClick={() => setMode('join')}><Camera size={16} /> Scan link QR</button></div>
         </div>
       ) : (
         <div className="pairing-workspace">
           <div className="pairing-steps">
             <button type="button" onClick={reset}>Back</button>
             <p className="eyebrow">{mode === 'offer' ? 'Device 1 · start here' : 'Device 2 · answer here'}</p>
-            <h3>{mode === 'offer' ? 'Send an offer, then paste the reply.' : 'Paste the offer and send back the reply.'}</h3>
-            <p>Pairing codes contain connection details, never your master password or decrypted secrets.</p>
+            <h3>{mode === 'offer' ? 'Show, then scan.' : 'Scan, then show.'}</h3>
+            <p>These one-time QR codes contain connection details, never your master password or decrypted secrets.</p>
           </div>
           {mode === 'offer' ? (
             <div className="pairing-fields">
-              <label><span>1. Offer code</span><textarea readOnly value={offerCode} placeholder={busy ? 'Creating a one-time code…' : 'Create a fresh pairing code'} rows="3" /></label>
-              <button type="button" className="code-copy" onClick={() => copyCode(offerCode)} disabled={!offerCode}><Share2 size={14} /> Copy offer</button>
-              <label><span>2. Response from the other device</span><textarea value={remoteCode} onChange={(event) => setRemoteCode(event.target.value)} placeholder="Paste the HUSH1 response code" rows="3" disabled={answerAccepted} /></label>
-              <button type="button" className="primary-button" onClick={finishPairing} disabled={!remoteCode.trim() || busy || answerAccepted}>{busy ? 'Connecting…' : answerAccepted ? 'Answer accepted' : 'Finish linking'} {!answerAccepted && <ArrowRight size={15} />}</button>
+              <div className="pairing-stage"><span>1</span><div><strong>Scan this on Device 2</strong><small>In Hush, choose Scan link QR.</small></div></div>
+              {offerCode ? <PairingQr value={offerCode} label="Scan this offer with Device 2" /> : <div className="qr-preparing"><span /><p>{busy ? 'Creating a private offer…' : 'Preparing QR…'}</p></div>}
+              <button type="button" className="primary-button scan-action" onClick={() => setScannerType('answer')} disabled={!offerCode || busy || answerAccepted}><Camera size={16} /> {answerAccepted ? 'Response scanned' : '2. Scan response QR'}</button>
               {answerAccepted && <p className="waiting-note"><span className="live-pip" /> Answer accepted. Waiting for the direct link…</p>}
+              <details className="pairing-fallback"><summary>Use text codes instead</summary><label><span>Offer code</span><textarea readOnly value={offerCode} placeholder={busy ? 'Creating a one-time code…' : 'Create a fresh pairing code'} rows="3" /></label><button type="button" className="code-copy" onClick={() => copyCode(offerCode)} disabled={!offerCode}><Share2 size={14} /> Copy offer</button><label><span>Response from Device 2</span><textarea value={remoteCode} onChange={(event) => setRemoteCode(event.target.value)} placeholder="Paste the HUSH1 response code" rows="3" disabled={answerAccepted} /></label><button type="button" className="primary-button" onClick={() => finishPairing()} disabled={!remoteCode.trim() || busy || answerAccepted}>{busy ? 'Connecting…' : answerAccepted ? 'Answer accepted' : 'Finish linking'} {!answerAccepted && <ArrowRight size={15} />}</button></details>
             </div>
           ) : (
             <div className="pairing-fields">
-              <label><span>1. Offer from the first device</span><textarea value={remoteCode} onChange={(event) => setRemoteCode(event.target.value)} placeholder="Paste the HUSH1 offer code" rows="3" /></label>
-              {!answerCode && <button type="button" className="primary-button" onClick={createAnswerCode} disabled={!remoteCode.trim() || busy}>{busy ? 'Preparing…' : 'Create response'} <ArrowRight size={15} /></button>}
-              {answerCode && <><label><span>2. Response code</span><textarea readOnly value={answerCode} rows="3" /></label><button type="button" className="code-copy" onClick={() => copyCode(answerCode)}><Share2 size={14} /> Copy response</button><p className="waiting-note"><span className="live-pip" /> Waiting for the first device to finish linking…</p></>}
+              {!answerCode ? <><div className="pairing-stage"><span>1</span><div><strong>Scan Device 1</strong><small>Allow camera access when your browser asks.</small></div></div><button type="button" className="primary-button scan-action" onClick={() => setScannerType('offer')} disabled={busy}><Camera size={16} /> {busy ? 'Preparing response…' : 'Scan offer QR'}</button><details className="pairing-fallback"><summary>Paste a text code instead</summary><label><span>Offer from Device 1</span><textarea value={remoteCode} onChange={(event) => setRemoteCode(event.target.value)} placeholder="Paste the HUSH1 offer code" rows="3" /></label><button type="button" className="primary-button" onClick={() => createAnswerCode()} disabled={!remoteCode.trim() || busy}>{busy ? 'Preparing…' : 'Create response'} <ArrowRight size={15} /></button></details></> : <><div className="pairing-stage"><span>2</span><div><strong>Show this to Device 1</strong><small>Scan it there to finish the private link.</small></div></div><PairingQr value={answerCode} label="Show this response to Device 1" /><p className="waiting-note"><span className="live-pip" /> Waiting for Device 1 to scan this response…</p><details className="pairing-fallback"><summary>Use a text response instead</summary><label><span>Response code</span><textarea readOnly value={answerCode} rows="3" /></label><button type="button" className="code-copy" onClick={() => copyCode(answerCode)}><Share2 size={14} /> Copy response</button></details></>}
             </div>
           )}
         </div>
       )}
       {(error || linkState.state === 'error') && <p className="inline-error device-error"><AlertTriangle size={15} /> {error || linkState.detail}</p>}
       <div className="device-privacy"><Shield size={15} /><span>{encrypted ? 'Only ciphertext crosses the link. The other device unlocks with your existing master password.' : 'This device can receive an encrypted vault. Demo items are never sent as a real vault.'}</span></div>
-    </section>
+      </section>
+      {scannerType && <QrScannerDialog expectedType={scannerType} onClose={() => setScannerType('')} onScan={handleScannedCode} />}
+    </>
   )
 }
 
@@ -597,14 +722,14 @@ function InstallAppCard({ installed, canInstall, onInstall }) {
   )
 }
 
-function SettingsView({ encrypted, autoLockMinutes, setAutoLockMinutes, onExport, onLock, onProtect, deviceLink, installApp }) {
+function SettingsView({ encrypted, autoLockMinutes, setAutoLockMinutes, onExport, onLock, onProtect, onLogout, deviceLink, installApp }) {
   return (
     <main className="settings-view page-enter">
       <header className="page-heading"><div><p className="eyebrow"><Settings size={14} /> Vault preferences</p><h1>Fewer switches.<br /><em>Better defaults.</em></h1><p className="heading-copy">Security choices should be understandable, not a maze of fine print.</p></div></header>
       <div className="settings-layout">
         <DeviceSyncCard encrypted={encrypted} {...deviceLink} />
         <InstallAppCard {...installApp} />
-        <section className="settings-card"><div className="settings-card-title"><span><Clock3 size={20} /></span><div><h2>Automatic lock</h2><p>Drop the decrypted key after a period of inactivity.</p></div></div><label className="setting-row"><span><strong>Lock after</strong><small>Mouse and keyboard activity reset the timer.</small></span><select value={autoLockMinutes} onChange={(event) => setAutoLockMinutes(Number(event.target.value))}><option value={5}>5 minutes</option><option value={10}>10 minutes</option><option value={30}>30 minutes</option><option value={60}>1 hour</option></select></label><button className="settings-action" type="button" onClick={encrypted ? onLock : onProtect}><Lock size={16} /> {encrypted ? 'Lock right now' : 'Create a protected vault'}<ArrowRight size={16} /></button></section>
+        <section className="settings-card"><div className="settings-card-title"><span><LockKeyhole size={20} /></span><div><h2>Vault access</h2><p>Lock this vault, or remove its local copy to switch vaults.</p></div></div><label className="setting-row"><span><strong>Lock after</strong><small>Mouse and keyboard activity reset the timer.</small></span><select value={autoLockMinutes} onChange={(event) => setAutoLockMinutes(Number(event.target.value))}><option value={5}>5 minutes</option><option value={10}>10 minutes</option><option value={30}>30 minutes</option><option value={60}>1 hour</option></select></label><button className="settings-action" type="button" onClick={encrypted ? onLock : onProtect}><Lock size={16} /> {encrypted ? 'Lock right now' : 'Create a protected vault'}<ArrowRight size={16} /></button>{encrypted && <button className="settings-action logout-action" type="button" onClick={onLogout}><LogOut size={16} /> Log out on this device<ChevronRight size={16} /></button>}</section>
         <section className="settings-card"><div className="settings-card-title"><span><Copy size={20} /></span><div><h2>Clipboard care</h2><p>Copied passwords show a 30-second timer in the app.</p></div></div><div className="honest-note"><Info size={16} /><p>Hush attempts to clear a copied password only if the browser allows it and your clipboard still contains that same value. Clipboard clearing is best-effort.</p></div></section>
         <section className="settings-card wide"><div className="settings-card-title"><span><Database size={20} /></span><div><h2>Encrypted archive</h2><p>Download the encrypted vault envelope—never a plaintext password list.</p></div></div><div className="backup-row"><div><span className={`backup-badge ${encrypted ? 'ready' : ''}`}><HardDrive size={17} /> {encrypted ? 'Encrypted archive ready' : 'Demo vault has no archive'}</span><small>{encrypted ? 'Includes ciphertext, salt, IVs, and version metadata. Archive restore is not included yet.' : 'Protect the demo first to create an exportable envelope.'}</small></div><button type="button" className="secondary-button" onClick={onExport} disabled={!encrypted}><Download size={16} /> Download .hush</button></div></section>
         <section className="settings-card wide technical"><p className="eyebrow">Technical note</p><h2>Built on browser-native cryptography.</h2><div><span><strong>AES-256-GCM</strong><small>Authenticated vault encryption</small></span><span><strong>PBKDF2 · SHA-256</strong><small>{ITERATIONS.toLocaleString()} derivation rounds</small></span><span><strong>IndexedDB</strong><small>Encrypted envelope at rest</small></span><span><strong>Local only</strong><small>No analytics or remote scripts</small></span></div></section>
@@ -662,6 +787,13 @@ function EntryEditor({ entry, onClose, onSave }) {
 function DeleteDialog({ entry, onClose, onConfirm }) {
   const dialogRef = useDialogFocus(onClose)
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section ref={dialogRef} className="confirm-dialog modal-enter" role="alertdialog" aria-modal="true" aria-labelledby="delete-title"><span className="danger-mark"><Trash2 size={22} /></span><p className="eyebrow">Delete secret</p><h2 id="delete-title">Remove {entry.name}?</h2><p>This permanently removes the item from the encrypted vault. This action cannot be undone.</p><div><button type="button" className="secondary-button" onClick={onClose}>Keep it</button><button type="button" className="danger-button" onClick={onConfirm}>Delete permanently</button></div></section></div>
+}
+
+function LogoutDialog({ onClose, onConfirm, busy }) {
+  const dialogRef = useDialogFocus(onClose)
+  const [confirmation, setConfirmation] = useState('')
+  const ready = confirmation.trim().toUpperCase() === 'REMOVE'
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !busy && onClose()}><section ref={dialogRef} className="confirm-dialog logout-dialog modal-enter" role="alertdialog" aria-modal="true" aria-labelledby="logout-title"><span className="danger-mark"><LogOut size={22} /></span><p className="eyebrow">Log out on this device</p><h2 id="logout-title">Remove the local vault?</h2><p>This permanently deletes this device’s encrypted copy and returns Hush to the welcome screen, so you can create or link a different vault. Other devices are not erased.</p><div className="logout-warning"><Info size={16} /><span>Download an encrypted archive first if this is your only copy.</span></div><label className="input-field"><span>Type REMOVE to confirm</span><input autoFocus value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" spellCheck="false" /></label><div className="confirm-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>Keep this vault</button><button type="button" className="danger-button" onClick={onConfirm} disabled={!ready || busy}>{busy ? 'Removing…' : 'Log out & remove'}</button></div></section></div>
 }
 
 function Onboarding({ onClose, onCreate, onLink, busy, sampleCount }) {
@@ -730,7 +862,7 @@ function Onboarding({ onClose, onCreate, onLink, busy, sampleCount }) {
   )
 }
 
-function LockScreen({ onUnlock, busy, notice }) {
+function LockScreen({ onUnlock, onLogout, busy, notice }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   async function submit(event) {
@@ -753,6 +885,7 @@ function LockScreen({ onUnlock, busy, notice }) {
         <div className="unlock-field"><label htmlFor="unlock-password">Master password</label><div className="unlock-input"><LockKeyhole size={18} /><input id="unlock-password" autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" autoComplete="current-password" aria-describedby={error ? 'unlock-note unlock-error' : 'unlock-note'} aria-invalid={Boolean(error)} /><button type="submit" disabled={!password || busy} aria-label="Unlock vault"><ArrowRight size={19} /></button></div></div>
         {error && <p className="unlock-error" id="unlock-error" role="alert"><AlertTriangle size={15} /> {error}</p>}
         <p className="unlock-note" id="unlock-note"><Shield size={15} /> Decryption happens only in this browser.</p>
+        <button type="button" className="lock-switch-vault" onClick={onLogout}><LogOut size={14} /> Use a different vault</button>
       </form>
       <div className="lock-footer"><span>NO RECOVERY · BY DESIGN</span><span>AES-256-GCM</span><span>LOCAL VAULT / 01</span></div>
     </main>
@@ -770,6 +903,7 @@ export default function App() {
   const [editorEntry, setEditorEntry] = useState(undefined)
   const [editorOpen, setEditorOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
+  const [logoutOpen, setLogoutOpen] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState(null)
@@ -1063,6 +1197,48 @@ export default function App() {
     setStatus('locked')
   }
 
+  async function logoutFromDevice() {
+    setBusy(true)
+    try {
+      await writeQueueRef.current.catch(() => {})
+      await deleteStoredVault()
+      const copiedValue = copiedValueRef.current
+      copiedValueRef.current = ''
+      setClipboardState(null)
+      void clearClipboardIfMatches(copiedValue)
+      sessionRef.current += 1
+      writeQueueRef.current = Promise.resolve()
+      linkRef.current?.shareEnvelope(null)
+      linkRef.current?.close()
+      pendingIncomingRef.current = null
+      dataKeyRef.current = null
+      envelopeRef.current = null
+      const demoEntries = normalizePasswordDates(sampleEntries)
+      entriesRef.current = demoEntries
+      committedEntriesRef.current = demoEntries
+      statusRef.current = 'demo'
+      setEnvelope(null)
+      setEntries(demoEntries)
+      setSelectedId(demoEntries[0]?.id || '')
+      setSearch('')
+      setFilter('all')
+      setView('vault')
+      setEditorOpen(false)
+      setDeleteTarget(null)
+      setLockNotice('')
+      setPeerName('')
+      setLinkState({ state: 'idle', detail: '' })
+      setAutoLockMinutes(10)
+      setLogoutOpen(false)
+      setStatus('demo')
+      setOnboardingOpen(true)
+    } catch (error) {
+      showToast(mutationErrorMessage(error, 'Could not remove the vault from this device.'), 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function queueEncryptedSnapshot(nextEntries, nextAutoLockMinutes) {
     const session = sessionRef.current
     const key = dataKeyRef.current
@@ -1204,7 +1380,7 @@ export default function App() {
   }
 
   if (status === 'checking') return <div className="app-loading"><span className="brand-seal"><BrandMark /></span><i /></div>
-  if (status === 'locked') return <LockScreen onUnlock={unlock} busy={busy} notice={lockNotice} />
+  if (status === 'locked') return <><LockScreen onUnlock={unlock} onLogout={() => setLogoutOpen(true)} busy={busy} notice={lockNotice} />{logoutOpen && <LogoutDialog onClose={() => setLogoutOpen(false)} onConfirm={logoutFromDevice} busy={busy} />}{toast && <div className={`toast ${toast.tone}`} role="status" key={toast.id}>{toast.tone === 'error' ? <AlertTriangle size={16} /> : <Check size={16} />}{toast.message}</div>}</>
 
   return (
     <div className="app-shell">
@@ -1214,7 +1390,7 @@ export default function App() {
         {view === 'vault' && <VaultView entries={entries} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} selectedId={selectedId} setSelectedId={setSelectedId} searchRef={searchRef} onAdd={() => openEditor()} onEdit={(entry, quick) => quick ? quickUpdate(entry) : openEditor(entry)} onDelete={setDeleteTarget} onCopy={copyValue} onUse={markEntryUsed} clipboardState={clipboardState} encrypted={encrypted} linkState={linkState} onSecurity={() => setView('security')} onHelp={() => showToast('Tip: press Ctrl or ⌘ + K to jump to search')} />}
         {view === 'security' && <SecurityView entries={entries} onBackToVault={(id) => { setSelectedId(id); setFilter('risk'); setView('vault') }} />}
         {view === 'import' && <ImportView entries={entries} onImport={importEntries} onDone={() => { setFilter('all'); setView('vault') }} encrypted={encrypted} />}
-        {view === 'settings' && <SettingsView encrypted={encrypted} autoLockMinutes={autoLockMinutes} setAutoLockMinutes={changeAutoLockMinutes} onExport={exportArchive} onLock={lockVault} onProtect={() => setOnboardingOpen(true)} deviceLink={{ linkState, peerName, onCreateOffer: () => linkRef.current.createOffer(), onAcceptOffer: (code) => linkRef.current.acceptOffer(code), onAcceptAnswer: (code) => linkRef.current.acceptAnswer(code), onDisconnect: () => linkRef.current?.close() }} installApp={{ installed: appInstalled, canInstall: Boolean(installPrompt), onInstall: installCurrentApp }} />}
+        {view === 'settings' && <SettingsView encrypted={encrypted} autoLockMinutes={autoLockMinutes} setAutoLockMinutes={changeAutoLockMinutes} onExport={exportArchive} onLock={lockVault} onProtect={() => setOnboardingOpen(true)} onLogout={() => setLogoutOpen(true)} deviceLink={{ linkState, peerName, onCreateOffer: () => linkRef.current.createOffer(), onAcceptOffer: (code) => linkRef.current.acceptOffer(code), onAcceptAnswer: (code) => linkRef.current.acceptAnswer(code), onDisconnect: () => linkRef.current?.close() }} installApp={{ installed: appInstalled, canInstall: Boolean(installPrompt), onInstall: installCurrentApp }} />}
       </div>
       <nav className="mobile-nav" aria-label="Mobile navigation">
         {navItems.slice(0, 2).map(({ id, label, icon: Icon }) => <button type="button" aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} key={id} onClick={() => setView(id)}><Icon size={19} /><span>{label}</span></button>)}
@@ -1223,6 +1399,7 @@ export default function App() {
       </nav>
       {editorOpen && <EntryEditor entry={editorEntry} onClose={() => setEditorOpen(false)} onSave={saveEntry} />}
       {deleteTarget && <DeleteDialog entry={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={confirmDelete} />}
+      {logoutOpen && <LogoutDialog onClose={() => setLogoutOpen(false)} onConfirm={logoutFromDevice} busy={busy} />}
       {onboardingOpen && <Onboarding onClose={() => setOnboardingOpen(false)} onCreate={createEncryptedVault} onLink={() => { setOnboardingOpen(false); setView('settings') }} busy={busy} sampleCount={entries.filter((entry) => entry.id.startsWith('sample-')).length} />}
       {toast && <div className={`toast ${toast.tone}`} role="status" key={toast.id}>{toast.tone === 'error' ? <AlertTriangle size={16} /> : <Check size={16} />}{toast.message}</div>}
     </div>
