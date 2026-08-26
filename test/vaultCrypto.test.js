@@ -7,6 +7,7 @@ import {
   persistVault,
   readStoredVault,
   unlockVault,
+  unlockVaultEnvelope,
 } from '../src/lib/vaultCrypto.js'
 
 test('creates, persists, and unlocks an authenticated encrypted vault', async () => {
@@ -25,6 +26,9 @@ test('creates, persists, and unlocks an authenticated encrypted vault', async ()
   assert.equal(stored.format, 'hush-vault-v1')
   assert.equal(ciphertextText.includes(secret), false)
   await assert.rejects(unlockVault('wrong password'), /Couldn’t unlock/)
+
+  const directlyOpened = await unlockVaultEnvelope('correct horse 🔐 phrase', created.envelope)
+  assert.equal(directlyOpened.payload.items[0].password, secret)
 
   const opened = await unlockVault('correct horse 🔐 phrase')
   assert.equal(opened.payload.items[0].password, secret)

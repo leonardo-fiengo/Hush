@@ -21,6 +21,8 @@ import {
   Info,
   KeyRound,
   LayoutGrid,
+  Laptop,
+  Link2,
   Lock,
   LockKeyhole,
   Menu,
@@ -29,11 +31,15 @@ import {
   Settings,
   Shield,
   ShieldCheck,
+  Share2,
   Sparkles,
   Star,
+  Smartphone,
   Trash2,
+  Unplug,
   UserRound,
   WandSparkles,
+  Wifi,
   X,
   Zap,
 } from 'lucide-react'
@@ -41,12 +47,17 @@ import ImportView from './components/ImportView.jsx'
 import { sampleEntries } from './data/sampleVault.js'
 import {
   createVault,
+  applyTransferredVault,
   hasStoredVault,
+  installTransferredVault,
   ITERATIONS,
+  openVaultEnvelope,
   persistVault,
   readStoredVault,
   unlockVault,
+  unlockVaultEnvelope,
 } from './lib/vaultCrypto.js'
+import { createDeviceLink } from './lib/deviceLink.js'
 import { safeHttpUrl } from './lib/importer.js'
 import {
   countPasswords,
@@ -55,6 +66,11 @@ import {
   passwordRisk,
   vaultHealthScore,
 } from './lib/passwordRisk.js'
+import {
+  compareEnvelopeVersions,
+  sameVault,
+  serializeEnvelope,
+} from './lib/vaultTransfer.js'
 
 const emptyEntry = {
   name: '',
@@ -188,8 +204,9 @@ async function clearClipboardIfMatches(value) {
   }
 }
 
-function Sidebar({ view, setView, filter, setFilter, entries, encrypted, onLock, collapsed, setCollapsed }) {
+function Sidebar({ view, setView, filter, setFilter, entries, encrypted, linkState, onLock, collapsed, setCollapsed }) {
   const passwordCounts = useMemo(() => countPasswords(entries), [entries])
+  const linked = linkState.state === 'connected' || linkState.state === 'syncing'
   const riskCount = useMemo(() => entries.filter((entry) => passwordRisk(entry, passwordCounts).atRisk).length, [entries, passwordCounts])
   const collections = useMemo(() => {
     const counts = new Map()
@@ -231,14 +248,15 @@ function Sidebar({ view, setView, filter, setFilter, entries, encrypted, onLock,
       </div>
 
       <div className="sidebar-bottom">
-        <div className="device-status"><span className={encrypted ? 'safe' : 'demo'}><HardDrive size={15} /></span><div><strong>{encrypted ? 'Encrypted here' : 'Preview vault'}</strong><small>{encrypted ? 'AES-256-GCM · local' : 'Not saved yet'}</small></div></div>
+        <div className="device-status"><span className={linked || encrypted ? 'safe' : 'demo'}>{linked ? <Wifi size={15} /> : <HardDrive size={15} />}</span><div><strong>{linked ? 'Device link live' : encrypted ? 'Encrypted here' : 'Preview vault'}</strong><small>{linked ? 'Two-way encrypted sync' : encrypted ? 'AES-256-GCM · local' : 'Not saved yet'}</small></div></div>
         <button className="lock-button" type="button" aria-label={encrypted ? 'Lock vault' : 'Protect this vault'} onClick={onLock}><Lock size={16} /><span>{encrypted ? 'Lock vault' : 'Protect this vault'}</span></button>
       </div>
     </aside>
   )
 }
 
-function Topbar({ search, setSearch, searchRef, onAdd, encrypted, onHelp }) {
+function Topbar({ search, setSearch, searchRef, onAdd, encrypted, linkState, onHelp }) {
+  const linked = linkState.state === 'connected' || linkState.state === 'syncing'
   return (
     <div className="topbar">
       <label className="search-box">
@@ -247,7 +265,7 @@ function Topbar({ search, setSearch, searchRef, onAdd, encrypted, onHelp }) {
         <kbd>⌘ K</kbd>
       </label>
       <div className="top-actions">
-        <span className={`sync-state ${encrypted ? '' : 'demo'}`}><i /> {encrypted ? 'Encrypted & saved' : 'Demo changes are temporary'}</span>
+        <span className={`sync-state ${encrypted ? '' : 'demo'}`}><i /> {linked ? 'Linked · syncing both ways' : encrypted ? 'Encrypted & saved' : 'Demo changes are temporary'}</span>
         <button type="button" className="icon-button" aria-label="Keyboard help" onClick={onHelp}><CircleHelp size={19} /></button>
         <button type="button" className="new-secret" onClick={onAdd}><Plus size={18} /> New secret</button>
       </div>
@@ -332,7 +350,7 @@ function DetailPanel({ entry, passwordCounts, onCopy, clipboardState, onEdit, on
   )
 }
 
-function VaultView({ entries, search, setSearch, filter, setFilter, selectedId, setSelectedId, searchRef, onAdd, onEdit, onDelete, onCopy, onUse, clipboardState, encrypted, onSecurity, onHelp }) {
+function VaultView({ entries, search, setSearch, filter, setFilter, selectedId, setSelectedId, searchRef, onAdd, onEdit, onDelete, onCopy, onUse, clipboardState, encrypted, linkState, onSecurity, onHelp }) {
   const passwordCounts = useMemo(() => countPasswords(entries), [entries])
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false)
   const visibleEntries = useMemo(() => {
@@ -402,7 +420,7 @@ function VaultView({ entries, search, setSearch, filter, setFilter, selectedId, 
 
   return (
     <main className="vault-view page-enter">
-      <Topbar search={search} setSearch={setSearch} searchRef={searchRef} onAdd={onAdd} encrypted={encrypted} onHelp={onHelp} />
+      <Topbar search={search} setSearch={setSearch} searchRef={searchRef} onAdd={onAdd} encrypted={encrypted} linkState={linkState} onHelp={onHelp} />
       <section className="vault-intro">
         <div><p className="eyebrow"><span className="live-pip" /> Vault open · just for you</p><h1>Your private things,<br /><em>beautifully in order.</em></h1></div>
         <div className="vault-pulse"><div className="score-ring" style={{ '--score': `${score * 3.6}deg` }}><span>{score}</span></div><div><strong>Vault health</strong><span>{issues ? `${issues} password${issues === 1 ? '' : 's'} at risk` : 'Everything looks excellent'}</span></div><button type="button" onClick={onSecurity} aria-label="Open security"><ChevronRight size={18} /></button></div>
@@ -454,11 +472,134 @@ function SecurityView({ entries, onBackToVault }) {
   )
 }
 
-function SettingsView({ encrypted, autoLockMinutes, setAutoLockMinutes, onExport, onLock, onProtect }) {
+function DeviceSyncCard({ encrypted, linkState, peerName, onCreateOffer, onAcceptOffer, onAcceptAnswer, onDisconnect }) {
+  const [mode, setMode] = useState('idle')
+  const [offerCode, setOfferCode] = useState('')
+  const [answerCode, setAnswerCode] = useState('')
+  const [remoteCode, setRemoteCode] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const connected = linkState.state === 'connected' || linkState.state === 'syncing'
+
+  async function copyCode(value) {
+    try {
+      await navigator.clipboard.writeText(value)
+      setError('')
+    } catch {
+      setError('Clipboard access was blocked. Select the code and copy it manually.')
+    }
+  }
+
+  async function createOfferCode() {
+    setBusy(true)
+    setError('')
+    try {
+      setOfferCode(await onCreateOffer())
+    } catch (offerError) {
+      setError(offerError.message || 'Could not create a pairing code.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function createAnswerCode() {
+    setBusy(true)
+    setError('')
+    try {
+      setAnswerCode(await onAcceptOffer(remoteCode))
+    } catch (answerError) {
+      setError(answerError.message || 'Could not read that pairing code.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function finishPairing() {
+    setBusy(true)
+    setError('')
+    try {
+      await onAcceptAnswer(remoteCode)
+    } catch (answerError) {
+      setError(answerError.message || 'Could not open the device link.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function reset() {
+    onDisconnect()
+    setMode('idle')
+    setOfferCode('')
+    setAnswerCode('')
+    setRemoteCode('')
+    setError('')
+  }
+
+  return (
+    <section className="settings-card wide device-sync-card">
+      <div className="settings-card-title">
+        <span><Link2 size={20} /></span>
+        <div><h2>Phone + laptop</h2><p>Pair two open Hush apps and move the encrypted vault directly between them.</p></div>
+        <span className={`link-status ${connected ? 'online' : ''}`}><i />{connected ? 'Live' : linkState.state === 'pairing' ? 'Pairing' : 'Offline'}</span>
+      </div>
+
+      {connected ? (
+        <div className="linked-device">
+          <div className="device-orbit"><Laptop size={28} /><i><Wifi size={16} /></i><Smartphone size={28} /></div>
+          <div><p className="eyebrow">Direct link active</p><h3>{peerName || 'Your other Hush device'}</h3><span>{linkState.detail || 'Encrypted changes travel both ways while both apps stay open.'}</span></div>
+          <button type="button" className="secondary-button" onClick={reset}><Unplug size={15} /> Disconnect</button>
+        </div>
+      ) : mode === 'idle' ? (
+        <div className="device-sync-start">
+          <div><h3>Bring Hush to your phone.</h3><p>Open the same HTTPS Hush address on your phone, install it, then use two one-time codes to make a direct link. No Hush account is needed.</p></div>
+          <div><button type="button" className="primary-button" onClick={() => { setMode('offer'); void createOfferCode() }}><Laptop size={16} /> Create a code</button><button type="button" className="secondary-button" onClick={() => setMode('join')}><Smartphone size={16} /> Use a code</button></div>
+        </div>
+      ) : (
+        <div className="pairing-workspace">
+          <div className="pairing-steps">
+            <button type="button" onClick={reset}>Back</button>
+            <p className="eyebrow">{mode === 'offer' ? 'Device 1 · start here' : 'Device 2 · answer here'}</p>
+            <h3>{mode === 'offer' ? 'Send an offer, then paste the reply.' : 'Paste the offer and send back the reply.'}</h3>
+            <p>Pairing codes contain connection details, never your master password or decrypted secrets.</p>
+          </div>
+          {mode === 'offer' ? (
+            <div className="pairing-fields">
+              <label><span>1. Offer code</span><textarea readOnly value={offerCode} placeholder={busy ? 'Creating a one-time code…' : 'Create a fresh pairing code'} rows="3" /></label>
+              <button type="button" className="code-copy" onClick={() => copyCode(offerCode)} disabled={!offerCode}><Share2 size={14} /> Copy offer</button>
+              <label><span>2. Response from the other device</span><textarea value={remoteCode} onChange={(event) => setRemoteCode(event.target.value)} placeholder="Paste the HUSH1 response code" rows="3" /></label>
+              <button type="button" className="primary-button" onClick={finishPairing} disabled={!remoteCode.trim() || busy}>{busy ? 'Connecting…' : 'Finish linking'} <ArrowRight size={15} /></button>
+            </div>
+          ) : (
+            <div className="pairing-fields">
+              <label><span>1. Offer from the first device</span><textarea value={remoteCode} onChange={(event) => setRemoteCode(event.target.value)} placeholder="Paste the HUSH1 offer code" rows="3" /></label>
+              {!answerCode && <button type="button" className="primary-button" onClick={createAnswerCode} disabled={!remoteCode.trim() || busy}>{busy ? 'Preparing…' : 'Create response'} <ArrowRight size={15} /></button>}
+              {answerCode && <><label><span>2. Response code</span><textarea readOnly value={answerCode} rows="3" /></label><button type="button" className="code-copy" onClick={() => copyCode(answerCode)}><Share2 size={14} /> Copy response</button><p className="waiting-note"><span className="live-pip" /> Waiting for the first device to finish linking…</p></>}
+            </div>
+          )}
+        </div>
+      )}
+      {(error || linkState.state === 'error') && <p className="inline-error device-error"><AlertTriangle size={15} /> {error || linkState.detail}</p>}
+      <div className="device-privacy"><Shield size={15} /><span>{encrypted ? 'Only ciphertext crosses the link. The other device unlocks with your existing master password.' : 'This device can receive an encrypted vault. Demo items are never sent as a real vault.'}</span></div>
+    </section>
+  )
+}
+
+function InstallAppCard({ installed, canInstall, onInstall }) {
+  return (
+    <section className="settings-card install-card">
+      <div className="settings-card-title"><span><Smartphone size={20} /></span><div><h2>Install the mobile app</h2><p>Keep Hush on your home screen with its own app window.</p></div></div>
+      <div className="install-row"><div><strong>{installed ? 'Hush is installed' : 'Ready for your home screen'}</strong><small>{canInstall ? 'Install from this browser in one tap.' : 'On iPhone, use Share → Add to Home Screen. On Android, use Install app in the browser menu.'}</small></div><button type="button" className="secondary-button" onClick={onInstall} disabled={installed || !canInstall}><Download size={16} /> {installed ? 'Installed' : 'Install'}</button></div>
+    </section>
+  )
+}
+
+function SettingsView({ encrypted, autoLockMinutes, setAutoLockMinutes, onExport, onLock, onProtect, deviceLink, installApp }) {
   return (
     <main className="settings-view page-enter">
       <header className="page-heading"><div><p className="eyebrow"><Settings size={14} /> Vault preferences</p><h1>Fewer switches.<br /><em>Better defaults.</em></h1><p className="heading-copy">Security choices should be understandable, not a maze of fine print.</p></div></header>
       <div className="settings-layout">
+        <DeviceSyncCard encrypted={encrypted} {...deviceLink} />
+        <InstallAppCard {...installApp} />
         <section className="settings-card"><div className="settings-card-title"><span><Clock3 size={20} /></span><div><h2>Automatic lock</h2><p>Drop the decrypted key after a period of inactivity.</p></div></div><label className="setting-row"><span><strong>Lock after</strong><small>Mouse and keyboard activity reset the timer.</small></span><select value={autoLockMinutes} onChange={(event) => setAutoLockMinutes(Number(event.target.value))}><option value={5}>5 minutes</option><option value={10}>10 minutes</option><option value={30}>30 minutes</option><option value={60}>1 hour</option></select></label><button className="settings-action" type="button" onClick={encrypted ? onLock : onProtect}><Lock size={16} /> {encrypted ? 'Lock right now' : 'Create a protected vault'}<ArrowRight size={16} /></button></section>
         <section className="settings-card"><div className="settings-card-title"><span><Copy size={20} /></span><div><h2>Clipboard care</h2><p>Copied passwords show a 30-second timer in the app.</p></div></div><div className="honest-note"><Info size={16} /><p>Hush attempts to clear a copied password only if the browser allows it and your clipboard still contains that same value. Clipboard clearing is best-effort.</p></div></section>
         <section className="settings-card wide"><div className="settings-card-title"><span><Database size={20} /></span><div><h2>Encrypted archive</h2><p>Download the encrypted vault envelope—never a plaintext password list.</p></div></div><div className="backup-row"><div><span className={`backup-badge ${encrypted ? 'ready' : ''}`}><HardDrive size={17} /> {encrypted ? 'Encrypted archive ready' : 'Demo vault has no archive'}</span><small>{encrypted ? 'Includes ciphertext, salt, IVs, and version metadata. Archive restore is not included yet.' : 'Protect the demo first to create an exportable envelope.'}</small></div><button type="button" className="secondary-button" onClick={onExport} disabled={!encrypted}><Download size={16} /> Download .hush</button></div></section>
@@ -518,7 +659,7 @@ function DeleteDialog({ entry, onClose, onConfirm }) {
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section ref={dialogRef} className="confirm-dialog modal-enter" role="alertdialog" aria-modal="true" aria-labelledby="delete-title"><span className="danger-mark"><Trash2 size={22} /></span><p className="eyebrow">Delete secret</p><h2 id="delete-title">Remove {entry.name}?</h2><p>This permanently removes the item from the encrypted vault. This action cannot be undone.</p><div><button type="button" className="secondary-button" onClick={onClose}>Keep it</button><button type="button" className="danger-button" onClick={onConfirm}>Delete permanently</button></div></section></div>
 }
 
-function Onboarding({ onClose, onCreate, busy, sampleCount }) {
+function Onboarding({ onClose, onCreate, onLink, busy, sampleCount }) {
   const dialogRef = useDialogFocus(onClose)
   const [mode, setMode] = useState('welcome')
   const [password, setPassword] = useState('')
@@ -562,7 +703,7 @@ function Onboarding({ onClose, onCreate, busy, sampleCount }) {
             <h1 id="onboarding-title">A quieter place for<br /><em>the important things.</em></h1>
             <p>Explore a polished sample vault, or protect it now with a master password. Your encrypted vault stays inside this browser.</p>
             <div className="promise-list"><span><ShieldCheck size={18} /><strong>AES-256-GCM encryption</strong></span><span><HardDrive size={18} /><strong>No account. No upload.</strong></span><span><Sparkles size={18} /><strong>Import any CSV your way</strong></span></div>
-            <div className="onboarding-actions"><button type="button" className="primary-button" onClick={() => setMode('create')}>Create encrypted vault <ArrowRight size={17} /></button><button type="button" className="text-button" onClick={onClose}>Explore the sample first</button></div>
+            <div className="onboarding-actions"><button type="button" className="primary-button" onClick={() => setMode('create')}>Create encrypted vault <ArrowRight size={17} /></button><button type="button" className="secondary-button" onClick={onLink}><Link2 size={16} /> Link my other device</button><button type="button" className="text-button" onClick={onClose}>Explore sample</button></div>
           </div>
         ) : (
           <form className="onboarding-copy create-form" onSubmit={submit}>
@@ -584,7 +725,7 @@ function Onboarding({ onClose, onCreate, busy, sampleCount }) {
   )
 }
 
-function LockScreen({ onUnlock, busy }) {
+function LockScreen({ onUnlock, busy, notice }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   async function submit(event) {
@@ -601,6 +742,7 @@ function LockScreen({ onUnlock, busy }) {
       <div className="lock-grain" />
       <div className="lock-brand"><span className="lock-seal"><BrandMark decorative={false} /></span><strong>hush.</strong><small>PRIVATE VAULT</small></div>
       <form className="unlock-card" onSubmit={submit}>
+        {notice && <p className="lock-notice"><Smartphone size={15} /> {notice}</p>}
         <p className="eyebrow"><span className="live-pip" /> Vault sealed</p>
         <h1>Welcome back.<br /><em>Let yourself in.</em></h1>
         <div className="unlock-field"><label htmlFor="unlock-password">Master password</label><div className="unlock-input"><LockKeyhole size={18} /><input id="unlock-password" autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" autoComplete="current-password" aria-describedby={error ? 'unlock-note unlock-error' : 'unlock-note'} aria-invalid={Boolean(error)} /><button type="submit" disabled={!password || busy} aria-label="Unlock vault"><ArrowRight size={19} /></button></div></div>
@@ -610,22 +752,6 @@ function LockScreen({ onUnlock, busy }) {
       <div className="lock-footer"><span>NO RECOVERY · BY DESIGN</span><span>AES-256-GCM</span><span>LOCAL VAULT / 01</span></div>
     </main>
   )
-}
-
-function serializeEnvelope(envelope) {
-  const toBase64 = (value) => {
-    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value)
-    let binary = ''
-    bytes.forEach((byte) => { binary += String.fromCharCode(byte) })
-    return btoa(binary)
-  }
-  return JSON.stringify({
-    format: envelope.format,
-    exportedAt: new Date().toISOString(),
-    kdf: { ...envelope.kdf, salt: toBase64(envelope.kdf.salt) },
-    wrappedKey: { ...envelope.wrappedKey, iv: toBase64(envelope.wrappedKey.iv), ciphertext: toBase64(envelope.wrappedKey.ciphertext) },
-    payload: { ...envelope.payload, iv: toBase64(envelope.payload.iv), ciphertext: toBase64(envelope.payload.ciphertext) },
-  }, null, 2)
 }
 
 export default function App() {
@@ -645,6 +771,11 @@ export default function App() {
   const [clipboardState, setClipboardState] = useState(null)
   const [autoLockMinutes, setAutoLockMinutes] = useState(10)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [linkState, setLinkState] = useState({ state: 'idle', detail: '' })
+  const [peerName, setPeerName] = useState('')
+  const [lockNotice, setLockNotice] = useState('')
+  const [installPrompt, setInstallPrompt] = useState(null)
+  const [appInstalled, setAppInstalled] = useState(() => window.matchMedia?.('(display-mode: standalone)').matches || Boolean(navigator.standalone))
   const copiedValueRef = useRef('')
   const searchRef = useRef(null)
   const dataKeyRef = useRef(null)
@@ -653,8 +784,12 @@ export default function App() {
   const committedEntriesRef = useRef([])
   const sessionRef = useRef(0)
   const writeQueueRef = useRef(Promise.resolve())
+  const linkRef = useRef(null)
+  const statusRef = useRef(status)
+  const pendingIncomingRef = useRef(null)
 
   const encrypted = status === 'unlocked'
+  statusRef.current = status
 
   useEffect(() => {
     let active = true
@@ -730,9 +865,105 @@ export default function App() {
     return () => window.clearInterval(timer)
   }, [clipboardState?.id])
 
+  useEffect(() => {
+    function captureInstallPrompt(event) {
+      event.preventDefault()
+      setInstallPrompt(event)
+    }
+    function markInstalled() {
+      setAppInstalled(true)
+      setInstallPrompt(null)
+    }
+    window.addEventListener('beforeinstallprompt', captureInstallPrompt)
+    window.addEventListener('appinstalled', markInstalled)
+    return () => {
+      window.removeEventListener('beforeinstallprompt', captureInstallPrompt)
+      window.removeEventListener('appinstalled', markInstalled)
+    }
+  }, [])
+
+  useEffect(() => {
+    const deviceLink = createDeviceLink({
+      onState: setLinkState,
+      onPeer: setPeerName,
+      onEnvelope: (incoming) => { void handleIncomingEnvelope(incoming) },
+    })
+    linkRef.current = deviceLink
+    return () => {
+      deviceLink.close(false)
+      linkRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    if (encrypted && envelope) linkRef.current?.shareEnvelope(envelope)
+  }, [encrypted, envelope])
+
   function showToast(message, tone = 'success') {
     setToast({ message, tone, id: Date.now() })
     window.setTimeout(() => setToast((current) => current?.message === message ? null : current), 2600)
+  }
+
+  async function handleIncomingEnvelope(incoming) {
+    try {
+      await writeQueueRef.current.catch(() => {})
+      const local = await readStoredVault()
+      if (!local) {
+        pendingIncomingRef.current = incoming
+        sessionRef.current += 1
+        dataKeyRef.current = null
+        envelopeRef.current = null
+        entriesRef.current = []
+        committedEntriesRef.current = []
+        setEnvelope(null)
+        setEntries([])
+        setOnboardingOpen(false)
+        setLockNotice('Encrypted vault received. Unlock with the same master password to authenticate and save it here.')
+        statusRef.current = 'locked'
+        setStatus('locked')
+        setLinkState({ state: 'connected', detail: 'Encrypted vault received' })
+        return
+      }
+      if (!sameVault(local, incoming)) {
+        setLinkState({ state: 'error', detail: 'These devices contain different vaults, so Hush did not overwrite either one.' })
+        return
+      }
+      const comparison = compareEnvelopeVersions(incoming, local)
+      if (comparison < 0) {
+        linkRef.current?.shareEnvelope(local)
+        return
+      }
+      if (comparison === 0) return
+
+      const key = dataKeyRef.current
+      if (!key || statusRef.current !== 'unlocked') {
+        pendingIncomingRef.current = incoming
+        setLockNotice('Encrypted changes are waiting. Unlock Hush to authenticate and apply them.')
+        setLinkState({ state: 'connected', detail: 'Encrypted changes waiting for unlock' })
+        return
+      }
+      const payload = await openVaultEnvelope(key, incoming)
+      await applyTransferredVault(local.revision || 0, incoming)
+      const syncedItems = normalizePasswordDates(payload.items)
+      envelopeRef.current = incoming
+      entriesRef.current = syncedItems
+      committedEntriesRef.current = syncedItems
+      setEnvelope(incoming)
+      setEntries(syncedItems)
+      setAutoLockMinutes(payload.preferences?.autoLockMinutes || 10)
+      setSelectedId((current) => syncedItems.some((entry) => entry.id === current) ? current : syncedItems[0]?.id || '')
+      showToast('Encrypted changes received from your other device')
+      setLinkState({ state: 'connected', detail: 'Encrypted vault synced just now' })
+    } catch (error) {
+      setLinkState({ state: 'error', detail: mutationErrorMessage(error, 'Could not apply the linked vault safely.') })
+    }
+  }
+
+  async function installCurrentApp() {
+    if (!installPrompt) return
+    await installPrompt.prompt()
+    const choice = await installPrompt.userChoice
+    if (choice.outcome === 'accepted') setInstallPrompt(null)
   }
 
   async function createEncryptedVault(password, keepSamples) {
@@ -751,6 +982,7 @@ export default function App() {
       setEntries(nextItems)
       setSelectedId(nextItems[0]?.id || '')
       setStatus('unlocked')
+      setLockNotice('')
       setOnboardingOpen(false)
       showToast('Encrypted vault created')
     } finally {
@@ -762,18 +994,42 @@ export default function App() {
     setBusy(true)
     try {
       await writeQueueRef.current.catch(() => {})
-      const opened = await unlockVault(password)
+      const stored = await readStoredVault()
+      const waiting = pendingIncomingRef.current
+      const receivingFirstVault = !stored && Boolean(waiting)
+      const opened = receivingFirstVault
+        ? await unlockVaultEnvelope(password, waiting)
+        : await unlockVault(password)
+      if (receivingFirstVault) {
+        await installTransferredVault(waiting)
+        pendingIncomingRef.current = null
+      }
+      let nextEnvelope = opened.envelope
+      let nextPayload = opened.payload
+      const pending = receivingFirstVault ? null : pendingIncomingRef.current
+      pendingIncomingRef.current = null
+      if (pending && sameVault(opened.envelope, pending) && compareEnvelopeVersions(pending, opened.envelope) > 0) {
+        try {
+          nextPayload = await openVaultEnvelope(opened.dataKey, pending)
+          await applyTransferredVault(opened.envelope.revision || 0, pending)
+          nextEnvelope = pending
+          setLinkState({ state: 'connected', detail: 'Waiting changes authenticated and synced' })
+        } catch {
+          setLinkState({ state: 'error', detail: 'Waiting device changes failed authentication and were not stored.' })
+        }
+      }
       sessionRef.current += 1
       dataKeyRef.current = opened.dataKey
-      envelopeRef.current = opened.envelope
-      const openedItems = normalizePasswordDates(opened.payload.items)
+      envelopeRef.current = nextEnvelope
+      const openedItems = normalizePasswordDates(nextPayload.items)
       entriesRef.current = openedItems
       committedEntriesRef.current = openedItems
-      setEnvelope(opened.envelope)
+      setEnvelope(nextEnvelope)
       setEntries(openedItems)
-      setAutoLockMinutes(opened.payload.preferences?.autoLockMinutes || 10)
+      setAutoLockMinutes(nextPayload.preferences?.autoLockMinutes || 10)
       setSelectedId(openedItems[0]?.id || '')
       setStatus('unlocked')
+      setLockNotice('')
     } finally {
       setBusy(false)
     }
@@ -930,7 +1186,7 @@ export default function App() {
     if (!encrypted) return
     try {
       const stored = envelope || await readStoredVault()
-      const blob = new Blob([serializeEnvelope(stored)], { type: 'application/json' })
+      const blob = new Blob([serializeEnvelope(stored, 2)], { type: 'application/json' })
       const link = document.createElement('a')
       link.href = URL.createObjectURL(blob)
       link.download = `hush-vault-${new Date().toISOString().slice(0, 10)}.hush`
@@ -943,17 +1199,17 @@ export default function App() {
   }
 
   if (status === 'checking') return <div className="app-loading"><span className="brand-seal"><BrandMark /></span><i /></div>
-  if (status === 'locked') return <LockScreen onUnlock={unlock} busy={busy} />
+  if (status === 'locked') return <LockScreen onUnlock={unlock} busy={busy} notice={lockNotice} />
 
   return (
     <div className="app-shell">
-      <Sidebar view={view} setView={setView} filter={filter} setFilter={setFilter} entries={entries} encrypted={encrypted} onLock={lockVault} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} />
+      <Sidebar view={view} setView={setView} filter={filter} setFilter={setFilter} entries={entries} encrypted={encrypted} linkState={linkState} onLock={lockVault} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} />
       <div className="mobile-header"><button className="brand-seal" type="button" onClick={() => setView('vault')} aria-label="Open vault"><BrandMark /></button><strong>hush.</strong><span className={encrypted ? 'encrypted' : 'demo'}>{encrypted ? 'Encrypted' : 'Demo'}</span><button className="icon-button" type="button" onClick={lockVault} aria-label={encrypted ? 'Lock vault' : 'Protect this vault'}><Lock size={18} /></button></div>
       <div className="main-area">
-        {view === 'vault' && <VaultView entries={entries} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} selectedId={selectedId} setSelectedId={setSelectedId} searchRef={searchRef} onAdd={() => openEditor()} onEdit={(entry, quick) => quick ? quickUpdate(entry) : openEditor(entry)} onDelete={setDeleteTarget} onCopy={copyValue} onUse={markEntryUsed} clipboardState={clipboardState} encrypted={encrypted} onSecurity={() => setView('security')} onHelp={() => showToast('Tip: press Ctrl or ⌘ + K to jump to search')} />}
+        {view === 'vault' && <VaultView entries={entries} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} selectedId={selectedId} setSelectedId={setSelectedId} searchRef={searchRef} onAdd={() => openEditor()} onEdit={(entry, quick) => quick ? quickUpdate(entry) : openEditor(entry)} onDelete={setDeleteTarget} onCopy={copyValue} onUse={markEntryUsed} clipboardState={clipboardState} encrypted={encrypted} linkState={linkState} onSecurity={() => setView('security')} onHelp={() => showToast('Tip: press Ctrl or ⌘ + K to jump to search')} />}
         {view === 'security' && <SecurityView entries={entries} onBackToVault={(id) => { setSelectedId(id); setFilter('risk'); setView('vault') }} />}
         {view === 'import' && <ImportView entries={entries} onImport={importEntries} onDone={() => { setFilter('all'); setView('vault') }} encrypted={encrypted} />}
-        {view === 'settings' && <SettingsView encrypted={encrypted} autoLockMinutes={autoLockMinutes} setAutoLockMinutes={changeAutoLockMinutes} onExport={exportArchive} onLock={lockVault} onProtect={() => setOnboardingOpen(true)} />}
+        {view === 'settings' && <SettingsView encrypted={encrypted} autoLockMinutes={autoLockMinutes} setAutoLockMinutes={changeAutoLockMinutes} onExport={exportArchive} onLock={lockVault} onProtect={() => setOnboardingOpen(true)} deviceLink={{ linkState, peerName, onCreateOffer: () => linkRef.current.createOffer(), onAcceptOffer: (code) => linkRef.current.acceptOffer(code), onAcceptAnswer: (code) => linkRef.current.acceptAnswer(code), onDisconnect: () => linkRef.current?.close() }} installApp={{ installed: appInstalled, canInstall: Boolean(installPrompt), onInstall: installCurrentApp }} />}
       </div>
       <nav className="mobile-nav" aria-label="Mobile navigation">
         {navItems.slice(0, 3).map(({ id, label, icon: Icon }) => <button type="button" aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} key={id} onClick={() => setView(id)}><Icon size={19} /><span>{label}</span></button>)}
@@ -962,7 +1218,7 @@ export default function App() {
       </nav>
       {editorOpen && <EntryEditor entry={editorEntry} onClose={() => setEditorOpen(false)} onSave={saveEntry} />}
       {deleteTarget && <DeleteDialog entry={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={confirmDelete} />}
-      {onboardingOpen && <Onboarding onClose={() => setOnboardingOpen(false)} onCreate={createEncryptedVault} busy={busy} sampleCount={entries.filter((entry) => entry.id.startsWith('sample-')).length} />}
+      {onboardingOpen && <Onboarding onClose={() => setOnboardingOpen(false)} onCreate={createEncryptedVault} onLink={() => { setOnboardingOpen(false); setView('settings') }} busy={busy} sampleCount={entries.filter((entry) => entry.id.startsWith('sample-')).length} />}
       {toast && <div className={`toast ${toast.tone}`} role="status" key={toast.id}>{toast.tone === 'error' ? <AlertTriangle size={16} /> : <Check size={16} />}{toast.message}</div>}
     </div>
   )

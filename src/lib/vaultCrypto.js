@@ -9,6 +9,7 @@ const WRAP_AAD = encoder.encode(`${FORMAT}:wrapped-key`)
 const PAYLOAD_AAD = encoder.encode(`${FORMAT}:payload`)
 
 const randomBytes = (size) => crypto.getRandomValues(new Uint8Array(size))
+const syncMetadata = () => ({ changeId: crypto.randomUUID(), changedAt: new Date().toISOString() })
 
 function openDatabase() {
   return new Promise((resolve, reject) => {
@@ -102,6 +103,22 @@ async function encryptPayload(dataKey, payload) {
   return { algorithm: 'AES-GCM', iv, ciphertext }
 }
 
+async function decryptPayload(dataKey, envelope) {
+  const plaintext = await crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv: envelope.payload.iv,
+      additionalData: PAYLOAD_AAD,
+      tagLength: 128,
+    },
+    dataKey,
+    envelope.payload.ciphertext,
+  )
+  const payload = JSON.parse(decoder.decode(plaintext))
+  if (payload?.schemaVersion !== 1 || !Array.isArray(payload.items)) throw new Error('Invalid vault schema')
+  return payload
+}
+
 export async function readStoredVault() {
   return transact('readonly', (store) => store.get(RECORD_KEY))
 }
@@ -126,6 +143,7 @@ export async function createVault(password, payload) {
   const envelope = {
     format: FORMAT,
     revision: 1,
+    sync: syncMetadata(),
     kdf: { name: 'PBKDF2', hash: 'SHA-256', iterations: ITERATIONS, salt },
     wrappedKey: { algorithm: 'AES-GCM', iv: wrapIv, ciphertext: wrappedCiphertext },
     payload: await encryptPayload(dataKey, payload),
@@ -134,8 +152,7 @@ export async function createVault(password, payload) {
   return { dataKey, envelope }
 }
 
-export async function unlockVault(password) {
-  const envelope = await readStoredVault()
+export async function unlockVaultEnvelope(password, envelope) {
   if (!envelope || envelope.format !== FORMAT) throw new Error('Unsupported or missing vault')
   try {
     const wrappingKey = await deriveWrappingKey(password, envelope.kdf.salt, envelope.kdf.iterations)
@@ -151,29 +168,46 @@ export async function unlockVault(password) {
     ))
     const dataKey = await crypto.subtle.importKey('raw', rawDataKey, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
     rawDataKey.fill(0)
-    const plaintext = await crypto.subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: envelope.payload.iv,
-        additionalData: PAYLOAD_AAD,
-        tagLength: 128,
-      },
-      dataKey,
-      envelope.payload.ciphertext,
-    )
-    const payload = JSON.parse(decoder.decode(plaintext))
-    if (payload?.schemaVersion !== 1 || !Array.isArray(payload.items)) throw new Error('Invalid vault schema')
+    const payload = await decryptPayload(dataKey, envelope)
     return { dataKey, envelope, payload }
   } catch {
     throw new Error('Couldn’t unlock this vault.')
   }
 }
 
+export async function unlockVault(password) {
+  return unlockVaultEnvelope(password, await readStoredVault())
+}
+
 export async function persistVault(dataKey, envelope, payload) {
   const expectedRevision = envelope.revision || 0
-  const nextEnvelope = { ...envelope, revision: expectedRevision + 1, payload: await encryptPayload(dataKey, payload) }
+  const nextEnvelope = {
+    ...envelope,
+    revision: expectedRevision + 1,
+    sync: syncMetadata(),
+    payload: await encryptPayload(dataKey, payload),
+  }
   await replaceStoredVault(expectedRevision, nextEnvelope)
   return nextEnvelope
+}
+
+export async function openVaultEnvelope(dataKey, envelope) {
+  if (!dataKey || envelope?.format !== FORMAT) throw new Error('Unsupported or missing vault')
+  try {
+    return await decryptPayload(dataKey, envelope)
+  } catch {
+    throw new Error('The linked device sent a vault that could not be authenticated.')
+  }
+}
+
+export async function installTransferredVault(envelope) {
+  if (envelope?.format !== FORMAT) throw new Error('Unsupported or missing vault')
+  await transact('readwrite', (store) => store.add(envelope, RECORD_KEY))
+}
+
+export async function applyTransferredVault(expectedRevision, envelope) {
+  if (envelope?.format !== FORMAT) throw new Error('Unsupported or missing vault')
+  await replaceStoredVault(expectedRevision, envelope)
 }
 
 export async function deleteStoredVault() {

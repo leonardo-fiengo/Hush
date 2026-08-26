@@ -1,6 +1,6 @@
 # Hush
 
-A local-first password manager interface with a real encrypted storage path and a flexible CSV/TSV import studio.
+A local-first password manager with an installable mobile experience, direct device linking, a real encrypted storage path, and a flexible CSV/TSV import studio.
 
 ## Run it
 
@@ -23,6 +23,10 @@ Open the local address printed by Vite. `npm.cmd` is used because this Windows e
 - A random per-vault data key wrapped by the master-password key
 - Encrypted IndexedDB persistence with fresh IVs on each save and revision checks that reject stale-tab overwrites
 - Lock/unlock, automatic inactivity lock, add/edit/delete, search, favorites/recent use, reveal, copy timer, generator, and encrypted archive download
+- Installable mobile PWA with an offline app shell and standalone home-screen window
+- One-time WebRTC pairing codes for direct phone ↔ laptop links
+- Live two-way encrypted-envelope sync with revision checks and deterministic concurrent-edit handling
+- Vault-identity checks that refuse to overwrite a different local vault
 - Local password-risk analysis that prioritizes length and guess resistance instead of rigid composition rules
 - Vault-wide reuse detection, with reused passwords treated as high-priority risk even when they are long
 - Pattern checks for common passwords, keyboard/sequential runs, repeated patterns, predictable password words, dates, and account/service context
@@ -51,6 +55,18 @@ The score is intended as a practical local risk indicator, not as a claim of exa
 ## Security scope
 
 The encrypted vault envelope is stored locally in IndexedDB. The master password is not stored. Imported source files and parsed values remain in memory and are cleared after completion.
+
+Device linking sends the same AES-GCM-encrypted envelope Hush stores on disk. Pairing codes contain WebRTC connection details, not passwords or vault contents. Hush uses Cloudflare's public STUN endpoint for peer discovery; STUN can observe network metadata but never receives the vault payload. There is no TURN relay, so restrictive networks may require both devices to be on the same Wi-Fi.
+
+## Install and link a phone
+
+1. Serve the production build from an HTTPS address that both devices can open. Web Crypto, service workers, and install prompts require a secure context on mobile.
+2. Open Hush on the phone and choose **Link my other device**, or go to **Settings → Phone + laptop**.
+3. On the laptop, choose **Create a code** and send that one-time offer to the phone.
+4. On the phone, choose **Use a code**, paste the offer, and return the response code.
+5. Paste the response on the laptop. Keep both apps open while syncing; the phone receives only ciphertext and unlocks with the existing master password.
+
+After the first visit, use the **Install** card in Settings or the browser's **Add to Home Screen / Install app** action. The cached app shell can open offline; live device sync naturally needs a network path between the two open apps.
 
 The `.hush` download is an encrypted archive of the stored envelope. Restore tooling is not included in this prototype, so it is not presented as a recoverable backup.
 

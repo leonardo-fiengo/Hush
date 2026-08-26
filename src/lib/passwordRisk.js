@@ -174,7 +174,9 @@ export function passwordRisk(entry, passwordCounts, now = Date.now()) {
   const ageDays = passwordAgeDays(entry, now)
   const lowStrength = health.value < PASSWORD_RISK_SCORE
   const reused = health.flags?.includes('reused') || false
-  const atRisk = lowStrength || reused
+  const riskFlags = new Set(['common', 'context', 'sequence', 'repeat', 'word', 'short'])
+  const predictable = health.flags?.some((flag) => riskFlags.has(flag)) || false
+  const atRisk = lowStrength || reused || predictable
   const [reason, shortReason] = atRisk
     ? primaryReason(health)
     : ['No current risk flags', `${health.value}% strength`]
