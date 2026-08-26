@@ -1216,9 +1216,9 @@ export default function App() {
         {view === 'settings' && <SettingsView encrypted={encrypted} autoLockMinutes={autoLockMinutes} setAutoLockMinutes={changeAutoLockMinutes} onExport={exportArchive} onLock={lockVault} onProtect={() => setOnboardingOpen(true)} deviceLink={{ linkState, peerName, onCreateOffer: () => linkRef.current.createOffer(), onAcceptOffer: (code) => linkRef.current.acceptOffer(code), onAcceptAnswer: (code) => linkRef.current.acceptAnswer(code), onDisconnect: () => linkRef.current?.close() }} installApp={{ installed: appInstalled, canInstall: Boolean(installPrompt), onInstall: installCurrentApp }} />}
       </div>
       <nav className="mobile-nav" aria-label="Mobile navigation">
-        {navItems.slice(0, 3).map(({ id, label, icon: Icon }) => <button type="button" aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} key={id} onClick={() => setView(id)}><Icon size={19} /><span>{label}</span></button>)}
-        <button type="button" className="mobile-add" onClick={() => openEditor()} aria-label="Add secret"><Plus size={22} /></button>
-        <button type="button" aria-current={view === 'settings' ? 'page' : undefined} className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}><Settings size={19} /><span>Settings</span></button>
+        {navItems.slice(0, 2).map(({ id, label, icon: Icon }) => <button type="button" aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} key={id} onClick={() => setView(id)}><Icon size={19} /><span>{label}</span></button>)}
+        <button type="button" className="mobile-add" onClick={() => openEditor()} aria-label="Add new password" title="Add new password"><Plus size={22} /></button>
+        {navItems.slice(2).map(({ id, label, icon: Icon }) => <button type="button" aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} key={id} onClick={() => setView(id)}><Icon size={19} /><span>{label}</span></button>)}
       </nav>
       {editorOpen && <EntryEditor entry={editorEntry} onClose={() => setEditorOpen(false)} onSave={saveEntry} />}
       {deleteTarget && <DeleteDialog entry={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={confirmDelete} />}

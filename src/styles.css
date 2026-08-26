@@ -2233,7 +2233,9 @@ h2 em {
 .editor-sheet {
   display: flex;
   width: min(530px, 100%);
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: 100dvh;
   flex-direction: column;
   border: 0;
   background: var(--paper);
@@ -2249,7 +2251,7 @@ h2 em {
 }
 
 .editor-sheet header h2 { margin: 0; font-size: 28px; letter-spacing: -1.2px; }
-.editor-body { display: flex; flex: 1; flex-direction: column; gap: 18px; padding: 27px 32px; overflow: auto; }
+.editor-body { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 18px; padding: 27px 32px; overflow: auto; overscroll-behavior: contain; scroll-padding-block: 90px; }
 .input-field { display: flex; min-width: 0; flex-direction: column; }
 .input-field > span { margin-bottom: 8px; color: #6d6f67; font-size: 9px; font-weight: 700; }
 .input-field > span b { margin-left: 6px; color: #a95446; font-family: var(--mono); font-size: 6px; letter-spacing: .6px; text-transform: uppercase; }
@@ -2272,7 +2274,7 @@ h2 em {
 .input-field input:focus,
 .input-field select:focus,
 .input-field textarea:focus { border-color: var(--iris); box-shadow: 0 0 0 3px rgba(112, 88, 244, .08); }
-.password-editor { overflow: hidden; border: 1px solid #c9cbbf; border-radius: 13px; background: #fdfcf8; }
+.password-editor { overflow: hidden; scroll-margin-block: 80px; border: 1px solid #c9cbbf; border-radius: 13px; background: #fdfcf8; }
 .password-editor .input-field { padding: 12px 13px 0; }
 .password-editor .input-field > div { display: flex; align-items: center; }
 .password-editor .input-field input { padding: 0; font-family: var(--mono); border: 0; background: transparent; box-shadow: none; }
