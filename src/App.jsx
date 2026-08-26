@@ -479,6 +479,7 @@ function DeviceSyncCard({ encrypted, linkState, peerName, onCreateOffer, onAccep
   const [remoteCode, setRemoteCode] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [answerAccepted, setAnswerAccepted] = useState(false)
   const connected = linkState.state === 'connected' || linkState.state === 'syncing'
 
   async function copyCode(value) {
@@ -519,6 +520,7 @@ function DeviceSyncCard({ encrypted, linkState, peerName, onCreateOffer, onAccep
     setError('')
     try {
       await onAcceptAnswer(remoteCode)
+      setAnswerAccepted(true)
     } catch (answerError) {
       setError(answerError.message || 'Could not open the device link.')
     } finally {
@@ -533,6 +535,7 @@ function DeviceSyncCard({ encrypted, linkState, peerName, onCreateOffer, onAccep
     setAnswerCode('')
     setRemoteCode('')
     setError('')
+    setAnswerAccepted(false)
   }
 
   return (
@@ -566,8 +569,9 @@ function DeviceSyncCard({ encrypted, linkState, peerName, onCreateOffer, onAccep
             <div className="pairing-fields">
               <label><span>1. Offer code</span><textarea readOnly value={offerCode} placeholder={busy ? 'Creating a one-time code…' : 'Create a fresh pairing code'} rows="3" /></label>
               <button type="button" className="code-copy" onClick={() => copyCode(offerCode)} disabled={!offerCode}><Share2 size={14} /> Copy offer</button>
-              <label><span>2. Response from the other device</span><textarea value={remoteCode} onChange={(event) => setRemoteCode(event.target.value)} placeholder="Paste the HUSH1 response code" rows="3" /></label>
-              <button type="button" className="primary-button" onClick={finishPairing} disabled={!remoteCode.trim() || busy}>{busy ? 'Connecting…' : 'Finish linking'} <ArrowRight size={15} /></button>
+              <label><span>2. Response from the other device</span><textarea value={remoteCode} onChange={(event) => setRemoteCode(event.target.value)} placeholder="Paste the HUSH1 response code" rows="3" disabled={answerAccepted} /></label>
+              <button type="button" className="primary-button" onClick={finishPairing} disabled={!remoteCode.trim() || busy || answerAccepted}>{busy ? 'Connecting…' : answerAccepted ? 'Answer accepted' : 'Finish linking'} {!answerAccepted && <ArrowRight size={15} />}</button>
+              {answerAccepted && <p className="waiting-note"><span className="live-pip" /> Answer accepted. Waiting for the direct link…</p>}
             </div>
           ) : (
             <div className="pairing-fields">

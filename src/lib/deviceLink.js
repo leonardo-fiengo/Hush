@@ -33,6 +33,7 @@ export function createDeviceLink({ onState, onEnvelope, onPeer }) {
   let peer = null
   let channel = null
   let pendingEnvelope = null
+  let acceptedAnswerSdp = ''
   const transfers = new Map()
 
   const report = (state, detail = '') => onState?.({ state, detail })
@@ -42,6 +43,7 @@ export function createDeviceLink({ onState, onEnvelope, onPeer }) {
     peer?.close()
     channel = null
     peer = null
+    acceptedAnswerSdp = ''
     transfers.clear()
     if (reportClosed) report('idle')
   }
@@ -69,7 +71,6 @@ export function createDeviceLink({ onState, onEnvelope, onPeer }) {
       const message = JSON.parse(event.data)
       if (message.type === 'hello') {
         onPeer?.(message.label || 'Linked device')
-        sendPendingEnvelope()
         return
       }
       if (message.type === 'vault-start') {
@@ -145,8 +146,18 @@ export function createDeviceLink({ onState, onEnvelope, onPeer }) {
 
   async function acceptAnswer(code) {
     if (!peer) throw new Error('Create a new pairing offer first.')
+    const answer = decodePairingCode(code, 'answer')
+    if (peer.signalingState === 'stable' && acceptedAnswerSdp === answer.sdp) {
+      report('pairing', 'Answer accepted · connecting')
+      return
+    }
+    if (peer.signalingState !== 'have-local-offer') {
+      throw new Error('This pairing offer is no longer waiting for an answer. Create a fresh code and try again.')
+    }
     report('pairing', 'Opening the direct link')
-    await peer.setRemoteDescription(decodePairingCode(code, 'answer'))
+    await peer.setRemoteDescription(answer)
+    acceptedAnswerSdp = answer.sdp
+    report('pairing', 'Answer accepted · connecting')
   }
 
   function shareEnvelope(envelope) {
