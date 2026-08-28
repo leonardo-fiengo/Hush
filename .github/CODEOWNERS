@@ -1,0 +1,11 @@
+# Require the repository owner to review security-sensitive changes once branch
+# protection and required CODEOWNERS reviews are enabled in GitHub settings.
+/src/lib/vaultCryptoCore.js @leonardo-fiengo
+/src/lib/vaultCrypto.js @leonardo-fiengo
+/src/lib/vaultTransfer.js @leonardo-fiengo
+/extension/ @leonardo-fiengo
+/vercel.json @leonardo-fiengo
+/.github/workflows/ @leonardo-fiengo
+/SECURITY.md @leonardo-fiengo
+/docs/THREAT_MODEL.md @leonardo-fiengo
+

@@ -2,7 +2,7 @@ export const sampleEntries = [
   {
     id: 'sample-linear',
     name: 'Linear',
-    username: 'leonardo@studio.co',
+    username: 'you',
     password: 'drift-garden-MARBLE-72!',
     url: 'https://linear.app',
     notes: 'Design workspace · recovery codes are stored in the studio safe.',
@@ -16,7 +16,7 @@ export const sampleEntries = [
   {
     id: 'sample-figma',
     name: 'Figma',
-    username: 'leo.design@studio.co',
+    username: 'you',
     password: 'orchid-VECTOR-94-lantern',
     url: 'https://figma.com',
     notes: 'Team workspace owner account. 2FA is enabled.',
@@ -30,7 +30,7 @@ export const sampleEntries = [
   {
     id: 'sample-proton',
     name: 'Proton Mail',
-    username: 'leonardo@proton.me',
+    username: 'you',
     password: 'Cobalt!harbor!97!atlas',
     url: 'https://mail.proton.me',
     notes: 'Personal inbox.',
@@ -44,7 +44,7 @@ export const sampleEntries = [
   {
     id: 'sample-github',
     name: 'GitHub',
-    username: 'leonardo-c',
+    username: 'you',
     password: 'pocket-COMET-38-river!',
     url: 'https://github.com',
     notes: 'Primary development account.',
@@ -58,7 +58,7 @@ export const sampleEntries = [
   {
     id: 'sample-notion',
     name: 'Notion',
-    username: 'leonardo@studio.co',
+    username: 'you',
     password: 'paper-kite-117',
     url: 'https://notion.so',
     notes: 'Shared editorial calendar.',
@@ -72,7 +72,7 @@ export const sampleEntries = [
   {
     id: 'sample-mubi',
     name: 'MUBI',
-    username: 'leonardo@proton.me',
+    username: 'you',
     password: 'cinema-club-2024',
     url: 'https://mubi.com',
     notes: 'Annual subscription.',
@@ -86,7 +86,7 @@ export const sampleEntries = [
   {
     id: 'sample-stripe',
     name: 'Stripe test',
-    username: 'finance@studio.co',
+    username: 'you',
     password: 'ledger-GLASS-61-canyon',
     url: 'https://dashboard.stripe.com',
     notes: 'Test-mode workspace only.',
@@ -100,7 +100,7 @@ export const sampleEntries = [
   {
     id: 'sample-router',
     name: 'Home router',
-    username: 'admin',
+    username: 'you',
     password: 'paper-kite-117',
     url: 'http://192.168.1.1',
     notes: 'Living room cabinet.',

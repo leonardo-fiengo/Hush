@@ -2791,6 +2791,52 @@ h2 em {
   .toast { right: 14px; bottom: calc(83px + env(safe-area-inset-bottom)); left: 14px; justify-content: center; }
 }
 
+.generator-panel { display: grid; gap: 13px; margin-top: 10px; padding: 15px; border: 1px solid #d8d9ce; border-radius: 14px; background: #f3f4ed; }
+.generator-top { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; color: #575950; }
+.generator-top strong { color: var(--ink); font-size: 11px; }
+.generator-top select { min-height: 32px; padding: 0 28px 0 9px; border: 1px solid #d2d4c8; border-radius: 8px; background: #fff; font-size: 10px; }
+.generator-range { display: grid; grid-template-columns: auto 1fr 28px; align-items: center; gap: 10px; color: #73756c; font-size: 10px; }
+.generator-range input { accent-color: #1f211c; }
+.generator-range b { color: var(--ink); text-align: right; }
+.generator-checks { display: flex; flex-wrap: wrap; gap: 7px 13px; }
+.generator-checks label { display: flex; align-items: center; gap: 5px; color: #5d5f57; font-size: 9px; }
+.generator-checks input { accent-color: #1f211c; }
+.generator-restrictions { display: grid; gap: 6px; color: #696b62; font-size: 9px; }
+.generator-restrictions small { color: #999b91; }
+.generator-restrictions input { min-height: 36px; padding: 0 10px; border: 1px solid #d2d4c8; border-radius: 9px; background: #fff; font-family: var(--mono); font-size: 9px; }
+.generator-actions { display: flex; align-items: center; gap: 8px; }
+.generator-actions button { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 11px; border: 1px solid #cfd0c5; border-radius: 9px; background: #fff; color: var(--ink); font-size: 9px; font-weight: 700; }
+.generator-actions .strength-mini { margin-left: auto; }
+.generator-error { margin: 0; color: #a54135; font-size: 10px; }
+.guess-estimate { margin: 7px 0 0; color: #898b81; font-size: 8px; }
+.history-field { display: grid; gap: 9px; }
+.history-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.history-heading > div { display: flex; gap: 7px; }
+.history-heading button { padding: 0; color: #676960; border: 0; background: none; font-size: 8px; text-decoration: underline; }
+.history-row { display: grid; grid-template-columns: 70px 1fr auto; align-items: center; gap: 8px; min-height: 30px; color: #777970; font-size: 8px; }
+.history-row code { overflow: hidden; color: #30322c; font-family: var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.history-row button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 1px solid #d5d6cc; border-radius: 8px; background: #fff; }
+.backup-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.file-button { cursor: pointer; }
+.file-button input { display: none; }
+.safe-mark { display: grid; place-items: center; width: 48px; height: 48px; margin: 0 auto 12px; color: #23251f; border-radius: 15px; background: var(--acid); }
+.credential-dialog { width: min(520px, calc(100% - 30px)); max-height: calc(100dvh - 32px); overflow: auto; }
+.credential-dialog > .input-field { width: 100%; margin-top: 13px; text-align: left; }
+.credential-dialog .password-meter { width: 100%; }
+.recovery-key-dialog { width: min(600px, calc(100% - 30px)); }
+.recovery-key-value { display: block; margin: 18px 0 12px; padding: 15px; overflow-wrap: anywhere; color: #e9ffd4; border: 1px solid #3b3e36; border-radius: 12px; background: #20221d; font-family: var(--mono); font-size: 12px; line-height: 1.8; user-select: all; }
+.recovery-key-dialog > .secondary-button { margin: 0 auto; }
+.recovery-confirm { margin-block: 18px; text-align: left; }
+
+@media (max-width: 680px) {
+  .generator-actions { align-items: stretch; flex-wrap: wrap; }
+  .generator-actions .strength-mini { width: 100%; margin-left: 0; }
+  .backup-actions { width: 100%; }
+  .backup-actions > * { width: 100%; justify-content: center; }
+  .credential-dialog,
+  .recovery-key-dialog { padding: 25px 20px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

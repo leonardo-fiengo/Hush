@@ -1,82 +1,101 @@
 # Hush
 
-A local-first password manager with an installable mobile experience, direct device linking, a real encrypted storage path, and a flexible CSV/TSV import studio.
+Hush is a local-first password manager with a versioned authenticated vault, installable web UI, encrypted backups, direct encrypted device transfer, password intelligence, and a least-privilege Chromium extension.
 
-## Run it
+This repository is an implemented security baseline, not an independently audited release. Read the [threat model](docs/THREAT_MODEL.md), [architecture](docs/ARCHITECTURE.md), and [release checklist](docs/RELEASE_SECURITY_CHECKLIST.md) before trusting it with real credentials.
 
-On Windows, double-click `Hush.cmd` in the project folder.
+## Run the web vault
 
-Or start it from PowerShell:
+On Windows, double-click `Hush.cmd`, or use:
 
 ```powershell
 npm.cmd install
 npm.cmd run dev
 ```
 
-Open the local address printed by Vite. `npm.cmd` is used because this Windows environment blocks PowerShell script shims.
+The production build is:
 
-## What works
+```powershell
+npm.cmd run build
+```
 
-- First-run sample vault and encrypted-vault creation
-- AES-256-GCM vault encryption through Web Crypto
-- PBKDF2-SHA-256 master-key derivation with 600,000 iterations
-- A random per-vault data key wrapped by the master-password key
-- Encrypted IndexedDB persistence with fresh IVs on each save and revision checks that reject stale-tab overwrites
-- Lock/unlock, automatic inactivity lock, add/edit/delete, search, favorites/recent use, reveal, copy timer, generator, and encrypted archive download
-- Installable mobile PWA with an offline app shell and standalone home-screen window
-- One-time WebRTC pairing codes for direct phone ↔ laptop links
-- Live two-way encrypted-envelope sync with revision checks and deterministic concurrent-edit handling
-- Vault-identity checks that refuse to overwrite a different local vault
-- Local password-risk analysis that prioritizes length and guess resistance instead of rigid composition rules
-- Vault-wide reuse detection, with reused passwords treated as high-priority risk even when they are long
-- Pattern checks for common passwords, keyboard/sequential runs, repeated patterns, predictable password words, dates, and account/service context
-- Password age is retained as useful metadata but is not treated as a reason to force routine password rotation
-- Local CSV/TSV parsing with BOM, CRLF, quoted commas, escaped quotes, and multiline values
-- Header/delimiter controls, A/B/C column mapping, required fields, masked password previews, duplicate handling, and review states
-- One-based discontinuous ranges such as `1-10, 14-17, 19-29`, including validation and overlap deduplication
-- Responsive navigation, mobile import layouts, focus styles, reduced-motion support, and keyboard search (`Ctrl/Cmd + K`)
+## Security architecture
 
-## Password scoring
+New vaults use:
 
-Hush does not treat uppercase/lowercase/number/symbol composition as proof that a password is strong. The local score uses length as the main positive signal and then lowers the score when the password is easier to guess because it contains recognizable patterns.
+- a random 256-bit vault data-encryption key (DEK);
+- Argon2id v1.3 with a unique salt, currently 64 MiB / three passes / parallelism one;
+- a master-password-derived key-encryption key (KEK) that wraps only the DEK;
+- AES-256-GCM through Web Crypto for wrapping, vault encryption, and metadata authentication;
+- a fresh random 96-bit nonce for every AES-GCM operation;
+- a one-time 256-bit recovery key with its own HKDF/AES-GCM DEK wrap;
+- an authenticated v2 format containing KDF parameters, revision/sync data, wrapped keys, ciphertext, and integrity metadata;
+- authenticated migration from the previous PBKDF2 v1 format.
 
-Current local signals include:
+Master-password changes rewrap the same DEK rather than re-encrypting every credential. The master password, raw DEK, generated passwords, and vault plaintext are never persisted or transmitted. Usable Web Crypto keys are non-extractable and references are discarded when Hush locks.
 
-- password reuse inside the vault
-- very common passwords
-- keyboard and ascending/descending sequences
-- repeated characters or repeated chunks
-- generic password words such as `password`, `secret`, or `admin`
-- years and recognizable dates
-- service, username, email-local-part, or domain context
+Run the machine-specific KDF benchmark with:
 
-The score is intended as a practical local risk indicator, not as a claim of exact entropy or exact cracking time. A future production release can augment this with a reviewed guessability estimator and an optional privacy-preserving known-breach check.
+```powershell
+npm.cmd run benchmark:kdf
+```
 
-## Security scope
+## Web-vault features
 
-The encrypted vault envelope is stored locally in IndexedDB. The master password is not stored. Imported source files and parsed values remain in memory and are cleared after completion.
+- encrypted IndexedDB persistence with atomic revision checks;
+- lock on browser restart, manual request, inactivity, or elapsed sleep interval;
+- authenticated `.hush` backup export and restore with rollback-safe validation;
+- one-time recovery-key display and offline master-password recovery;
+- configurable best-effort clipboard clearing with clipboard-history warning;
+- encrypted, timestamped, bounded password history with manual deletion;
+- CSPRNG password/passphrase generator with configurable groups, length, ambiguous-character avoidance, and site restrictions;
+- guessability-oriented local scoring for common passwords, words, names, sequences, repeats, dates, affixes, leetspeak, account context, and passphrases;
+- local CSV/TSV parsing, flexible mapping/ranges, duplicate review, and atomic encrypted import;
+- encrypted-envelope WebRTC transfer with identity and revision checks;
+- PWA installation and offline app shell;
+- strict production security headers in `vercel.json`, local fonts/scripts only, and no analytics.
 
-Device linking sends the same AES-GCM-encrypted envelope Hush stores on disk. Pairing codes contain WebRTC connection details, not passwords or vault contents. Hush uses Cloudflare's public STUN endpoint for peer discovery; STUN can observe network metadata but never receives the vault payload. There is no TURN relay, so restrictive networks may require both devices to be on the same Wi-Fi.
+## Build and load the Chromium extension
 
-## Install and link a phone
+Build one Manifest V3 package for Chrome or Edge:
 
-1. Serve the production build from an HTTPS address that both devices can open. Web Crypto, service workers, and install prompts require a secure context on mobile.
-2. Open Hush on the phone and choose **Link my other device**, or go to **Settings → Phone + laptop**.
-3. On the laptop, choose **Create a code** and send that one-time offer to the phone.
-4. On the phone, choose **Use a code**, paste the offer, and return the response code.
-5. Paste the response on the laptop. Keep both apps open while syncing; the phone receives only ciphertext and unlocks with the existing master password.
+```powershell
+npm.cmd run build:extension
+```
 
-After the first visit, use the **Install** card in Settings or the browser's **Add to Home Screen / Install app** action. The cached app shell can open offline; live device sync naturally needs a network path between the two open apps.
+Then open the browser's extension-management page, enable developer mode, and load `dist-extension` as an unpacked extension.
 
-The `.hush` download is an encrypted archive of the stored envelope. Restore tooling is not included in this prototype, so it is not presented as a recoverable backup.
+The extension:
 
-This is a polished client-side implementation, not a security-audited production release. A real release should add a strict CSP, hardened packaging/update delivery, dependency review, large-file parsing in a worker, broader automated browser testing, and an independent cryptographic/security audit.
+- owns an authenticated encrypted local envelope in `chrome.storage.local`;
+- keeps the unlocked key and payload only in service-worker memory;
+- locks on restart, service-worker suspension, browser/OS idle, or configured inactivity;
+- asks for optional access one website at a time and requests no browsing-history permission;
+- validates sender ID, sender URL/origin, top-frame ID, top-tab URL, and the live tab immediately before fill;
+- performs exact hostname and port matching with URL parsing and Public Suffix List/IDN awareness;
+- blocks HTTPS credentials on HTTP and refuses IDN filling by default;
+- fills only after a user clicks Hush and returns only the selected credential to the approved page;
+- detects normal, dynamic, React-style, login, registration, multi-step, and password-change fields, including open Shadow DOM;
+- stages captures and password changes in memory, preserving the old password until the user confirms success;
+- contains no remotely loaded code or custom updater.
 
-## Verify
+The production web origin in `extension/manifest.json` must be verified before store publication. The final browser-store extension ID must also be configured before the web UI can use a direct encrypted management bridge. Until then, use an authenticated `.hush` handoff and keep only one actively edited authority.
+
+## Verification
 
 ```powershell
 npm.cmd test
 npm.cmd run build
+npm.cmd run build:extension
+npm.cmd audit
 ```
 
-The tests cover discontinuous ranges, overlap deduplication, malformed/out-of-range input, quoted and multiline CSV cells, BOM/CRLF handling, password-whitespace preservation, password-risk patterns/context/reuse, vault-health scoring, master-password quality checks, encrypted round trips, fresh IVs, wrong-password rejection, and stale-tab write conflicts.
+The automated suite covers vault creation/unlock/persistence, wrong passwords, ciphertext/nonce/metadata tampering, fresh salts/nonces, rewrap, recovery, backup restore, legacy migration, password patterns/guess estimates, secure generation, imports, transfers, strict domains/ports/IDN/HTTP, extension sender/action policy, form classification, permissions, and static remote-code/DOM-secret checks.
+
+Hostile fixtures and the manual real-site matrix are documented in [the extension test plan](docs/EXTENSION_TEST_PLAN.md). GitHub CI builds both products, runs tests/audit, generates a CycloneDX SBOM, and uploads short-lived build artifacts. CodeQL and Dependabot configurations are included.
+
+## Privacy and disclosure
+
+Hush has no vault backend, analytics, advertising, tracking pixel, or remote runtime JavaScript. See [PRIVACY.md](PRIVACY.md) for data handling and [SECURITY.md](SECURITY.md) for private vulnerability reporting.
+
+If the operating system or browser is fully compromised while Hush is unlocked, malware may read memory, keystrokes, clipboard content, or filled form values. Hush cannot defend against that environment.

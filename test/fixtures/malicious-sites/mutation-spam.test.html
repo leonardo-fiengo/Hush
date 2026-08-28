@@ -1,0 +1,11 @@
+<!doctype html>
+<title>Mutation spam</title>
+<div id="target"></div>
+<script>
+  for (let index = 0; index < 5000; index += 1) {
+    const input = document.createElement('input')
+    input.type = index % 2 ? 'password' : 'email'
+    document.querySelector('#target').append(input)
+  }
+</script>
+

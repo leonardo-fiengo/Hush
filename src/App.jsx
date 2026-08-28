@@ -18,6 +18,7 @@ import {
   Eye,
   EyeOff,
   FileKey2,
+  FileUp,
   Folder,
   HardDrive,
   Heart,
@@ -51,15 +52,18 @@ import {
 import ImportView from './components/ImportView.jsx'
 import { sampleEntries } from './data/sampleVault.js'
 import {
+  ARGON2_PARAMS,
+  changeMasterPassword,
   createVault,
   applyTransferredVault,
   deleteStoredVault,
   hasStoredVault,
   installTransferredVault,
-  ITERATIONS,
   openVaultEnvelope,
   persistVault,
   readStoredVault,
+  recoverVault,
+  restoreVaultArchive,
   unlockVault,
   unlockVaultEnvelope,
 } from './lib/vaultCrypto.js'
@@ -72,12 +76,14 @@ import {
   passwordRisk,
   vaultHealthScore,
 } from './lib/passwordRisk.js'
+import { generatePassphrase, generatePassword, GENERATOR_DEFAULTS } from './lib/passwordGenerator.js'
 import {
   compareEnvelopeVersions,
   decodePairingCode,
   pairingCodeFromQr,
   pairingCodeToQr,
   sameVault,
+  deserializeEnvelope,
   serializeEnvelope,
 } from './lib/vaultTransfer.js'
 
@@ -112,9 +118,17 @@ function avatarHue(name = '') {
 }
 
 function normalizePasswordDates(items) {
-  return items.map((entry) => entry.passwordChangedAt || (!entry.updatedAt && !entry.createdAt)
-    ? entry
-    : { ...entry, passwordChangedAt: entry.updatedAt || entry.createdAt })
+  const now = new Date().toISOString()
+  return items.map((entry) => ({
+    ...entry,
+    id: entry.id || crypto.randomUUID(),
+    revision: Math.max(1, Number(entry.revision) || 1),
+    encryptionVersion: 2,
+    createdAt: entry.createdAt || now,
+    updatedAt: entry.updatedAt || entry.createdAt || now,
+    passwordChangedAt: entry.passwordChangedAt || entry.updatedAt || entry.createdAt || now,
+    passwordHistory: Array.isArray(entry.passwordHistory) ? entry.passwordHistory : [],
+  }))
 }
 
 function formatUpdated(value) {
@@ -144,17 +158,13 @@ function mutationErrorMessage(error, fallback) {
   return error?.message?.includes('changed in another tab') ? error.message : fallback
 }
 
-function securePassword(length = 20) {
-  const alphabet = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%&*-_+'
-  const unbiasedLimit = 256 - (256 % alphabet.length)
-  let result = ''
-  while (result.length < length) {
-    const values = crypto.getRandomValues(new Uint8Array(Math.max(16, length - result.length)))
-    values.forEach((value) => {
-      if (value < unbiasedLimit && result.length < length) result += alphabet[value % alphabet.length]
-    })
-  }
-  return result
+const DEFAULT_PREFERENCES = Object.freeze({ autoLockMinutes: 15, clipboardClearSeconds: 30, passwordHistoryLimit: 5 })
+
+function normalizePreferences(preferences = {}) {
+  const autoLockMinutes = [0, 5, 15, 30, 60].includes(Number(preferences.autoLockMinutes)) ? Number(preferences.autoLockMinutes) : DEFAULT_PREFERENCES.autoLockMinutes
+  const clipboardClearSeconds = [15, 30, 60, 120].includes(Number(preferences.clipboardClearSeconds)) ? Number(preferences.clipboardClearSeconds) : DEFAULT_PREFERENCES.clipboardClearSeconds
+  const passwordHistoryLimit = [0, 3, 5, 10].includes(Number(preferences.passwordHistoryLimit)) ? Number(preferences.passwordHistoryLimit) : DEFAULT_PREFERENCES.passwordHistoryLimit
+  return { autoLockMinutes, clipboardClearSeconds, passwordHistoryLimit }
 }
 
 function useDialogFocus(onClose) {
@@ -320,9 +330,10 @@ function SecretList({ entries, passwordCounts, selectedId, setSelectedId, filter
   )
 }
 
-function DetailPanel({ entry, passwordCounts, onCopy, clipboardState, onEdit, onDelete, mobileOpen, onMobileClose }) {
+function DetailPanel({ entry, passwordCounts, onCopy, clipboardState, onEdit, onDelete, onClearHistory, mobileOpen, onMobileClose }) {
   const [revealed, setRevealed] = useState(false)
-  useEffect(() => setRevealed(false), [entry?.id])
+  const [historyRevealed, setHistoryRevealed] = useState(false)
+  useEffect(() => { setRevealed(false); setHistoryRevealed(false) }, [entry?.id])
 
   if (!entry) {
     return <aside className="detail-panel empty-detail"><span><KeyRound size={28} /></span><h3>Select a secret</h3><p>Its useful details will appear here, quietly and only when you need them.</p></aside>
@@ -350,16 +361,18 @@ function DetailPanel({ entry, passwordCounts, onCopy, clipboardState, onEdit, on
         <label>Password <span className={`strength-mini ${health.tone}`}>{health.value}%</span></label>
         <div className="field-value"><span className={revealed ? 'revealed-password' : 'masked-password'} aria-label={revealed ? entry.password : 'Password hidden'}>{revealed ? entry.password : '••••••••••••••••'}</span><div><button type="button" onClick={() => setRevealed(!revealed)} aria-label={revealed ? 'Hide password' : 'Reveal password'} aria-pressed={revealed}>{revealed ? <EyeOff size={17} /> : <Eye size={17} />}</button><button className="copy-primary" type="button" onClick={() => onCopy('Password', entry.password)} aria-label="Copy password">{clipboardState?.label === 'Password' ? <><Check size={15} /> {clipboardState.remaining}s</> : <><Copy size={15} /> Copy</>}</button></div></div>
         <div className="strength-line"><i style={{ width: `${health.value}%` }} className={health.tone} /></div>
+        <p className="guess-estimate">{health.label} · about {health.entropyBits} bits of local estimated guess resistance</p>
         {risk.atRisk && <div className={`password-risk-note ${risk.tone}`}><AlertTriangle size={15} /><span>{risk.reason}</span></div>}
       </div>
       {entry.notes && <div className="field-block notes-field"><label>Private note</label><p>{entry.notes}</p></div>}
+      {entry.passwordHistory?.length > 0 && <div className="field-block history-field"><div className="history-heading"><label>Password history · {entry.passwordHistory.length}</label><div><button type="button" onClick={() => setHistoryRevealed((current) => !current)}>{historyRevealed ? 'Hide' : 'Reveal'}</button><button type="button" onClick={() => onClearHistory(entry)}>Delete history</button></div></div>{entry.passwordHistory.map((item) => <div className="history-row" key={`${item.changedAt}-${item.password.length}`}><span>{formatUpdated(item.changedAt)}</span><code>{historyRevealed ? item.password : '••••••••••••'}</code>{historyRevealed && <button type="button" onClick={() => onCopy('Previous password', item.password)} aria-label="Copy previous password"><Copy size={14} /></button>}</div>)}</div>}
       <div className="tag-row">{(entry.tags || []).map((tag) => <span key={tag}>#{tag}</span>)}<span>{entry.collection || 'Unsorted'}</span></div>
       <div className="detail-footer"><div><span>Password changed</span><strong>{passwordChangedAt ? formatUpdated(passwordChangedAt) : 'Unknown'}</strong></div><div><span>Created</span><strong>{new Intl.DateTimeFormat('en', { month: 'short', year: 'numeric' }).format(new Date(entry.createdAt))}</strong></div><button type="button" onClick={() => onDelete(entry)}><Trash2 size={15} /> Delete</button></div>
     </aside>
   )
 }
 
-function VaultView({ entries, search, setSearch, filter, setFilter, selectedId, setSelectedId, searchRef, onAdd, onEdit, onDelete, onCopy, onUse, clipboardState, encrypted, linkState, onSecurity, onHelp }) {
+function VaultView({ entries, search, setSearch, filter, setFilter, selectedId, setSelectedId, searchRef, onAdd, onEdit, onDelete, onClearHistory, onCopy, onUse, clipboardState, encrypted, linkState, onSecurity, onHelp }) {
   const passwordCounts = useMemo(() => countPasswords(entries), [entries])
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false)
   const visibleEntries = useMemo(() => {
@@ -436,7 +449,7 @@ function VaultView({ entries, search, setSearch, filter, setFilter, selectedId, 
       </section>
       <section className="vault-workspace">
         <SecretList entries={visibleEntries} passwordCounts={passwordCounts} selectedId={selected?.id} setSelectedId={(id) => { setSelectedId(id); onUse(id); if (window.matchMedia('(max-width: 700px)').matches) setMobileDetailOpen(true) }} filter={filter} setFilter={setFilter} onClear={() => { setFilter('all'); setSearch('') }} />
-        <DetailPanel key={selected?.id || 'empty'} entry={selected} passwordCounts={passwordCounts} onCopy={onCopy} clipboardState={clipboardState} onEdit={onEdit} onDelete={onDelete} mobileOpen={mobileDetailOpen} onMobileClose={() => setMobileDetailOpen(false)} />
+        <DetailPanel key={selected?.id || 'empty'} entry={selected} passwordCounts={passwordCounts} onCopy={onCopy} clipboardState={clipboardState} onEdit={onEdit} onDelete={onDelete} onClearHistory={onClearHistory} mobileOpen={mobileDetailOpen} onMobileClose={() => setMobileDetailOpen(false)} />
       </section>
     </main>
   )
@@ -465,7 +478,7 @@ function SecurityView({ entries, onBackToVault }) {
           <div className="story-seal"><BrandMark /></div>
           <p className="eyebrow">What protection means here</p>
           <h2>Your vault is encrypted<br />before it is stored.</h2>
-          <p>A random AES-256-GCM key protects the complete vault—including names, URLs, and notes. Your master password wraps that key using {ITERATIONS.toLocaleString()} PBKDF2 iterations and is never stored.</p>
+          <p>A random AES-256-GCM key protects the complete vault—including names, URLs, and notes. Your master password derives a wrapping key with Argon2id ({Math.round(ARGON2_PARAMS.memorySize / 1024)} MiB, {ARGON2_PARAMS.iterations} passes) and is never stored.</p>
           <div className="security-flow"><span>Master password</span><i /><span>Wrapped key</span><i /><span>Encrypted vault</span></div>
         </section>
         <section className="attention-list">
@@ -722,32 +735,60 @@ function InstallAppCard({ installed, canInstall, onInstall }) {
   )
 }
 
-function SettingsView({ encrypted, autoLockMinutes, setAutoLockMinutes, onExport, onLock, onProtect, onLogout, deviceLink, installApp }) {
+function SettingsView({ encrypted, autoLockMinutes, setAutoLockMinutes, clipboardClearSeconds, setClipboardClearSeconds, passwordHistoryLimit, setPasswordHistoryLimit, onExport, onRestoreFile, onChangePassword, onLock, onProtect, onLogout, deviceLink, installApp }) {
   return (
     <main className="settings-view page-enter">
       <header className="page-heading"><div><p className="eyebrow"><Settings size={14} /> Vault preferences</p><h1>Fewer switches.<br /><em>Better defaults.</em></h1><p className="heading-copy">Security choices should be understandable, not a maze of fine print.</p></div></header>
       <div className="settings-layout">
         <DeviceSyncCard encrypted={encrypted} {...deviceLink} />
         <InstallAppCard {...installApp} />
-        <section className="settings-card"><div className="settings-card-title"><span><LockKeyhole size={20} /></span><div><h2>Vault access</h2><p>Lock this vault, or remove its local copy to switch vaults.</p></div></div><label className="setting-row"><span><strong>Lock after</strong><small>Mouse and keyboard activity reset the timer.</small></span><select value={autoLockMinutes} onChange={(event) => setAutoLockMinutes(Number(event.target.value))}><option value={5}>5 minutes</option><option value={10}>10 minutes</option><option value={30}>30 minutes</option><option value={60}>1 hour</option></select></label><button className="settings-action" type="button" onClick={encrypted ? onLock : onProtect}><Lock size={16} /> {encrypted ? 'Lock right now' : 'Create a protected vault'}<ArrowRight size={16} /></button>{encrypted && <button className="settings-action logout-action" type="button" onClick={onLogout}><LogOut size={16} /> Log out on this device<ChevronRight size={16} /></button>}</section>
-        <section className="settings-card"><div className="settings-card-title"><span><Copy size={20} /></span><div><h2>Clipboard care</h2><p>Copied passwords show a 30-second timer in the app.</p></div></div><div className="honest-note"><Info size={16} /><p>Hush attempts to clear a copied password only if the browser allows it and your clipboard still contains that same value. Clipboard clearing is best-effort.</p></div></section>
-        <section className="settings-card wide"><div className="settings-card-title"><span><Database size={20} /></span><div><h2>Encrypted archive</h2><p>Download the encrypted vault envelope—never a plaintext password list.</p></div></div><div className="backup-row"><div><span className={`backup-badge ${encrypted ? 'ready' : ''}`}><HardDrive size={17} /> {encrypted ? 'Encrypted archive ready' : 'Demo vault has no archive'}</span><small>{encrypted ? 'Includes ciphertext, salt, IVs, and version metadata. Archive restore is not included yet.' : 'Protect the demo first to create an exportable envelope.'}</small></div><button type="button" className="secondary-button" onClick={onExport} disabled={!encrypted}><Download size={16} /> Download .hush</button></div></section>
-        <section className="settings-card wide technical"><p className="eyebrow">Technical note</p><h2>Built on browser-native cryptography.</h2><div><span><strong>AES-256-GCM</strong><small>Authenticated vault encryption</small></span><span><strong>PBKDF2 · SHA-256</strong><small>{ITERATIONS.toLocaleString()} derivation rounds</small></span><span><strong>IndexedDB</strong><small>Encrypted envelope at rest</small></span><span><strong>Local only</strong><small>No analytics or remote scripts</small></span></div></section>
+        <section className="settings-card">
+          <div className="settings-card-title"><span><LockKeyhole size={20} /></span><div><h2>Vault access</h2><p>Lock this vault, or remove its local copy to switch vaults.</p></div></div>
+          <label className="setting-row"><span><strong>Lock after</strong><small>Mouse and keyboard activity reset the timer.</small></span><select value={autoLockMinutes} onChange={(event) => setAutoLockMinutes(Number(event.target.value))}><option value={5}>5 minutes</option><option value={15}>15 minutes</option><option value={30}>30 minutes</option><option value={60}>1 hour</option><option value={0}>Never</option></select></label>
+          <label className="setting-row"><span><strong>Password history</strong><small>Previous values remain inside the encrypted vault.</small></span><select value={passwordHistoryLimit} onChange={(event) => setPasswordHistoryLimit(Number(event.target.value))}><option value={0}>Off</option><option value={3}>3 versions</option><option value={5}>5 versions</option><option value={10}>10 versions</option></select></label>
+          <button className="settings-action" type="button" onClick={encrypted ? onLock : onProtect}><Lock size={16} /> {encrypted ? 'Lock right now' : 'Create a protected vault'}<ArrowRight size={16} /></button>
+          {encrypted && <button className="settings-action" type="button" onClick={onChangePassword}><KeyRound size={16} /> Change master password<ChevronRight size={16} /></button>}
+          {encrypted && <button className="settings-action logout-action" type="button" onClick={onLogout}><LogOut size={16} /> Log out on this device<ChevronRight size={16} /></button>}
+        </section>
+        <section className="settings-card">
+          <div className="settings-card-title"><span><Copy size={20} /></span><div><h2>Clipboard care</h2><p>Copied secrets are cleared on a configurable timer.</p></div></div>
+          <label className="setting-row"><span><strong>Clear copied secrets</strong><small>Best effort when browser permissions allow.</small></span><select value={clipboardClearSeconds} onChange={(event) => setClipboardClearSeconds(Number(event.target.value))}><option value={15}>After 15 seconds</option><option value={30}>After 30 seconds</option><option value={60}>After 1 minute</option><option value={120}>After 2 minutes</option></select></label>
+          <div className="honest-note"><Info size={16} /><p>Clipboard history tools may retain copied values. Prefer extension autofill when available; Hush never copies silently.</p></div>
+        </section>
+        <section className="settings-card wide">
+          <div className="settings-card-title"><span><Database size={20} /></span><div><h2>Encrypted backup</h2><p>Export or restore the authenticated encrypted envelope—never a plaintext password list.</p></div></div>
+          <div className="backup-row"><div><span className={`backup-badge ${encrypted ? 'ready' : ''}`}><HardDrive size={17} /> {encrypted ? 'Encrypted backup ready' : 'Restore an existing backup'}</span><small>Includes the format version, Argon2id parameters, wrapped vault key, ciphertext, recovery wrap, and integrity metadata.</small></div><div className="backup-actions"><button type="button" className="secondary-button" onClick={onExport} disabled={!encrypted}><Download size={16} /> Download .hush</button><label className="secondary-button file-button"><FileUp size={16} /> Restore .hush<input type="file" accept=".hush,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) onRestoreFile(file); event.target.value = '' }} /></label></div></div>
+        </section>
+        <section className="settings-card wide technical"><p className="eyebrow">Technical note</p><h2>Memory-hard key derivation. Authenticated encryption.</h2><div><span><strong>AES-256-GCM</strong><small>Unique nonces + authenticated metadata</small></span><span><strong>Argon2id</strong><small>{Math.round(ARGON2_PARAMS.memorySize / 1024)} MiB · {ARGON2_PARAMS.iterations} passes · p={ARGON2_PARAMS.parallelism}</small></span><span><strong>KEK → DEK</strong><small>Master-password changes only rewrap the vault key</small></span><span><strong>Local only</strong><small>No analytics or remote vault scripts</small></span></div></section>
       </div>
     </main>
   )
 }
 
-function EntryEditor({ entry, onClose, onSave }) {
+function EntryEditor({ entry, onClose, onSave, onCopy }) {
   const savingRef = useRef(false)
   const closeIfIdle = () => { if (!savingRef.current) onClose() }
   const dialogRef = useDialogFocus(closeIfIdle)
   const [form, setForm] = useState(() => ({ ...emptyEntry, ...(entry || {}) }))
   const [showPassword, setShowPassword] = useState(false)
-  const [length, setLength] = useState(20)
+  const [generator, setGenerator] = useState({ ...GENERATOR_DEFAULTS, mode: 'password', words: 8, allowedCharacters: '' })
+  const [generatorError, setGeneratorError] = useState('')
   const [saving, setSaving] = useState(false)
   const isEdit = Boolean(entry?.id)
   const update = (field, value) => setForm((current) => ({ ...current, [field]: value }))
+  const updateGenerator = (field, value) => setGenerator((current) => ({ ...current, [field]: value }))
+
+  function regenerate() {
+    try {
+      const password = generator.mode === 'passphrase'
+        ? generatePassphrase({ words: generator.words, separator: '-', includeNumber: true })
+        : generatePassword(generator)
+      update('password', password)
+      setGeneratorError('')
+    } catch (error) {
+      setGeneratorError(error.message || 'Could not generate a password with those rules.')
+    }
+  }
 
   async function submit(event) {
     event.preventDefault()
@@ -772,7 +813,16 @@ function EntryEditor({ entry, onClose, onSave }) {
           <div className="secret-value-block">
             <label className="input-field" htmlFor="entry-secret"><span>Password <b>Required</b></span></label>
             <div className="secret-value-input"><input id="entry-secret" name="password" type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => update('password', event.target.value)} placeholder="Add or generate a password" autoComplete="new-password" required /><button type="button" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? <EyeOff size={19} /> : <Eye size={19} />}</button></div>
-            <div className="secret-tools"><WandSparkles size={17} /><label><span>Length</span><input type="range" min="14" max="32" value={length} onChange={(event) => setLength(Number(event.target.value))} /><b>{length}</b></label><button type="button" onClick={() => update('password', securePassword(length))}>Generate</button></div>
+            <div className="generator-panel">
+              <div className="generator-top"><WandSparkles size={17} /><strong>Hush Generator</strong><select value={generator.mode} onChange={(event) => updateGenerator('mode', event.target.value)}><option value="password">Password</option><option value="passphrase">Passphrase</option></select></div>
+              {generator.mode === 'password' ? <>
+                <label className="generator-range"><span>Length</span><input type="range" min="12" max="64" value={generator.length} onChange={(event) => updateGenerator('length', Number(event.target.value))} /><b>{generator.length}</b></label>
+                <div className="generator-checks">{[['lowercase', 'Lowercase'], ['uppercase', 'Uppercase'], ['numbers', 'Numbers'], ['symbols', 'Symbols'], ['avoidAmbiguous', 'Avoid ambiguous']].map(([key, label]) => <label key={key}><input type="checkbox" checked={generator[key]} onChange={(event) => updateGenerator(key, event.target.checked)} /><span>{label}</span></label>)}</div>
+                <label className="generator-restrictions"><span>Site-allowed characters <small>Optional</small></span><input value={generator.allowedCharacters} onChange={(event) => updateGenerator('allowedCharacters', event.target.value)} placeholder="Leave blank unless the site restricts characters" /></label>
+              </> : <label className="generator-range"><span>Words</span><input type="range" min="5" max="12" value={generator.words} onChange={(event) => updateGenerator('words', Number(event.target.value))} /><b>{generator.words}</b></label>}
+              <div className="generator-actions"><button type="button" onClick={regenerate}><Zap size={15} /> {form.password ? 'Regenerate' : 'Generate'}</button>{form.password && <button type="button" onClick={() => onCopy('Generated password', form.password)}><Copy size={15} /> Copy</button>}<span className={`strength-mini ${passwordHealth({ password: form.password }, new Map()).tone}`}>{form.password ? `${passwordHealth({ password: form.password }, new Map()).label} · ${passwordHealth({ password: form.password }, new Map()).value}%` : 'Local only'}</span></div>
+              {generatorError && <p className="generator-error" role="alert">{generatorError}</p>}
+            </div>
           </div>
           <label className="input-field"><span>Website</span><input value={form.url} onChange={(event) => update('url', event.target.value)} placeholder="https://example.com" inputMode="url" /></label>
           <div className="editor-pair"><label className="input-field"><span>Collection</span><select value={form.collection} onChange={(event) => update('collection', event.target.value)}><option>Personal</option><option>Work</option><option>Finance</option><option>Home</option><option>Travel</option><option>Imported</option></select></label><label className="favorite-check"><input type="checkbox" checked={form.favorite} onChange={(event) => update('favorite', event.target.checked)} /><span><Star size={17} fill={form.favorite ? 'currentColor' : 'none'} /></span><strong>Favorite</strong></label></div>
@@ -794,6 +844,72 @@ function LogoutDialog({ onClose, onConfirm, busy }) {
   const [confirmation, setConfirmation] = useState('')
   const ready = confirmation.trim().toUpperCase() === 'REMOVE'
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !busy && onClose()}><section ref={dialogRef} className="confirm-dialog logout-dialog modal-enter" role="alertdialog" aria-modal="true" aria-labelledby="logout-title"><span className="danger-mark"><LogOut size={22} /></span><p className="eyebrow">Log out on this device</p><h2 id="logout-title">Remove the local vault?</h2><p>This permanently deletes this device’s encrypted copy and returns Hush to the welcome screen, so you can create or link a different vault. Other devices are not erased.</p><div className="logout-warning"><Info size={16} /><span>Download an encrypted archive first if this is your only copy.</span></div><label className="input-field"><span>Type REMOVE to confirm</span><input autoFocus value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" spellCheck="false" /></label><div className="confirm-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>Keep this vault</button><button type="button" className="danger-button" onClick={onConfirm} disabled={!ready || busy}>{busy ? 'Removing…' : 'Log out & remove'}</button></div></section></div>
+}
+
+function RecoveryKeyDialog({ recoveryKey, onCopy, onClose }) {
+  const dialogRef = useDialogFocus(() => {})
+  const [confirmed, setConfirmed] = useState(false)
+  return <div className="modal-backdrop"><section ref={dialogRef} className="confirm-dialog recovery-key-dialog modal-enter" role="dialog" aria-modal="true" aria-labelledby="recovery-key-title"><span className="safe-mark"><FileKey2 size={22} /></span><p className="eyebrow">One-time recovery key</p><h2 id="recovery-key-title">Save this somewhere safe.</h2><p>Hush will never show this key again. It can reset a forgotten master password, but anyone who has it and your encrypted vault can unlock the vault.</p><code className="recovery-key-value">{recoveryKey}</code><button type="button" className="secondary-button" onClick={() => onCopy('Recovery key', recoveryKey)}><Copy size={16} /> Copy recovery key</button><label className="keep-samples recovery-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span><Check size={13} /></span><div><strong>I saved the key</strong><small>I understand Hush cannot retrieve it later.</small></div></label><button type="button" className="primary-button full-button" disabled={!confirmed} onClick={onClose}>Continue to my vault <ArrowRight size={16} /></button></section></div>
+}
+
+function ChangePasswordDialog({ onClose, onConfirm, busy }) {
+  const dialogRef = useDialogFocus(onClose)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [nextPassword, setNextPassword] = useState('')
+  const [confirmation, setConfirmation] = useState('')
+  const [error, setError] = useState('')
+  const health = useMemo(() => masterPasswordHealth(nextPassword), [nextPassword])
+  async function submit(event) {
+    event.preventDefault()
+    if (!health.acceptable) return setError('Use at least 14 characters and avoid predictable words, names, sequences, and dates.')
+    if (nextPassword !== confirmation) return setError('The new passwords do not match.')
+    try {
+      setError('')
+      await onConfirm(currentPassword, nextPassword)
+    } catch (changeError) {
+      setError(changeError.message || 'Could not change the master password.')
+    }
+  }
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !busy && onClose()}><form ref={dialogRef} className="confirm-dialog credential-dialog modal-enter" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="change-password-title"><span className="safe-mark"><KeyRound size={22} /></span><p className="eyebrow">Rewrap vault key</p><h2 id="change-password-title">Change master password</h2><p>Your credentials are not re-encrypted. Hush verifies the current password and securely wraps the same random vault key with the new one.</p><label className="input-field"><span>Current master password</span><input autoFocus type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" /></label><label className="input-field"><span>New master password</span><input type="password" value={nextPassword} onChange={(event) => setNextPassword(event.target.value)} autoComplete="new-password" /></label><div className="password-meter"><i style={{ width: `${health.value}%` }} /><span>{health.label}</span></div><label className="input-field"><span>Confirm new password</span><input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="new-password" /></label>{error && <p className="inline-error" role="alert"><AlertTriangle size={15} /> {error}</p>}<div className="confirm-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>Cancel</button><button type="submit" className="primary-button" disabled={busy || !currentPassword || !health.acceptable || nextPassword !== confirmation}>{busy ? 'Rewrapping…' : 'Change password'}</button></div></form></div>
+}
+
+function RecoverVaultDialog({ onClose, onConfirm, busy }) {
+  const dialogRef = useDialogFocus(onClose)
+  const [recoveryKey, setRecoveryKey] = useState('')
+  const [nextPassword, setNextPassword] = useState('')
+  const [confirmation, setConfirmation] = useState('')
+  const [error, setError] = useState('')
+  const health = useMemo(() => masterPasswordHealth(nextPassword), [nextPassword])
+  async function submit(event) {
+    event.preventDefault()
+    if (!health.acceptable) return setError('Choose a stronger replacement master password.')
+    if (nextPassword !== confirmation) return setError('The new passwords do not match.')
+    try {
+      setError('')
+      await onConfirm(recoveryKey, nextPassword)
+    } catch (recoverError) {
+      setError(recoverError.message || 'That recovery key could not unlock this vault.')
+    }
+  }
+  return <div className="modal-backdrop"><form ref={dialogRef} className="confirm-dialog credential-dialog modal-enter" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="recover-title"><span className="safe-mark"><FileKey2 size={22} /></span><p className="eyebrow">Offline recovery</p><h2 id="recover-title">Use your recovery key</h2><p>The key is checked locally. A successful recovery immediately replaces the old master-password wrap.</p><label className="input-field"><span>Recovery key</span><textarea autoFocus rows="3" value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} spellCheck="false" autoComplete="off" /></label><label className="input-field"><span>New master password</span><input type="password" value={nextPassword} onChange={(event) => setNextPassword(event.target.value)} autoComplete="new-password" /></label><label className="input-field"><span>Confirm new password</span><input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="new-password" /></label>{error && <p className="inline-error" role="alert"><AlertTriangle size={15} /> {error}</p>}<div className="confirm-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>Cancel</button><button type="submit" className="primary-button" disabled={busy || !recoveryKey || !health.acceptable || nextPassword !== confirmation}>{busy ? 'Recovering…' : 'Recover vault'}</button></div></form></div>
+}
+
+function RestoreDialog({ file, replacing, onClose, onConfirm, busy }) {
+  const dialogRef = useDialogFocus(onClose)
+  const [password, setPassword] = useState('')
+  const [confirmation, setConfirmation] = useState('')
+  const [error, setError] = useState('')
+  const ready = Boolean(password) && (!replacing || confirmation.trim().toUpperCase() === 'REPLACE')
+  async function submit(event) {
+    event.preventDefault()
+    try {
+      setError('')
+      await onConfirm(password)
+    } catch (restoreError) {
+      setError(restoreError.message || 'Could not authenticate and restore that backup.')
+    }
+  }
+  return <div className="modal-backdrop"><form ref={dialogRef} className="confirm-dialog credential-dialog modal-enter" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="restore-title"><span className="safe-mark"><FileUp size={22} /></span><p className="eyebrow">Authenticated restore</p><h2 id="restore-title">Restore {file.name}</h2><p>Hush will authenticate the encrypted backup before storing it. No plaintext is imported from an unauthenticated file.</p><label className="input-field"><span>Backup master password</span><input autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></label>{replacing && <label className="input-field"><span>Type REPLACE to overwrite this device’s local vault</span><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" spellCheck="false" /></label>}{error && <p className="inline-error" role="alert"><AlertTriangle size={15} /> {error}</p>}<div className="confirm-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>Cancel</button><button type="submit" className="primary-button" disabled={busy || !ready}>{busy ? 'Authenticating…' : 'Restore encrypted vault'}</button></div></form></div>
 }
 
 function Onboarding({ onClose, onCreate, onLink, busy, sampleCount }) {
@@ -847,7 +963,7 @@ function Onboarding({ onClose, onCreate, onLink, busy, sampleCount }) {
             <button type="button" className="form-back" onClick={() => setMode('welcome')}>← Back</button>
             <p className="eyebrow"><LockKeyhole size={14} /> Create your vault</p>
             <h1 id="onboarding-title">Choose the one key<br /><em>only you will know.</em></h1>
-            <p>There is no password recovery. A memorable passphrase is safer than something short and clever.</p>
+            <p>Use a long memorable passphrase. Hush will create a one-time recovery key for you to save offline.</p>
             <label className="input-field"><span>Master password</span><input id="new-master-password" autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" placeholder="A long, memorable phrase" aria-describedby="password-guidance password-strength" aria-invalid={Boolean(error && !masterHealth.acceptable)} /></label>
             <div className="password-meter" id="password-strength" aria-live="polite"><i style={{ width: `${masterHealth.value}%` }} /><span>{masterLabel}</span></div>
             <p id="password-guidance" className="visually-hidden">Use at least 14 characters and avoid predictable words, sequences, repeated patterns, and dates. A longer memorable passphrase is recommended.</p>
@@ -862,7 +978,7 @@ function Onboarding({ onClose, onCreate, onLink, busy, sampleCount }) {
   )
 }
 
-function LockScreen({ onUnlock, onLogout, busy, notice }) {
+function LockScreen({ onUnlock, onRecover, onLogout, busy, notice }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   async function submit(event) {
@@ -885,9 +1001,10 @@ function LockScreen({ onUnlock, onLogout, busy, notice }) {
         <div className="unlock-field"><label htmlFor="unlock-password">Master password</label><div className="unlock-input"><LockKeyhole size={18} /><input id="unlock-password" autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" autoComplete="current-password" aria-describedby={error ? 'unlock-note unlock-error' : 'unlock-note'} aria-invalid={Boolean(error)} /><button type="submit" disabled={!password || busy} aria-label="Unlock vault"><ArrowRight size={19} /></button></div></div>
         {error && <p className="unlock-error" id="unlock-error" role="alert"><AlertTriangle size={15} /> {error}</p>}
         <p className="unlock-note" id="unlock-note"><Shield size={15} /> Decryption happens only in this browser.</p>
+        <button type="button" className="lock-switch-vault" onClick={onRecover}><FileKey2 size={14} /> Recover with saved key</button>
         <button type="button" className="lock-switch-vault" onClick={onLogout}><LogOut size={14} /> Use a different vault</button>
       </form>
-      <div className="lock-footer"><span>NO RECOVERY · BY DESIGN</span><span>AES-256-GCM</span><span>LOCAL VAULT / 01</span></div>
+      <div className="lock-footer"><span>OFFLINE RECOVERY KEY</span><span>ARGON2ID · AES-256-GCM</span><span>LOCAL VAULT / 02</span></div>
     </main>
   )
 }
@@ -908,7 +1025,13 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState(null)
   const [clipboardState, setClipboardState] = useState(null)
-  const [autoLockMinutes, setAutoLockMinutes] = useState(10)
+  const [autoLockMinutes, setAutoLockMinutes] = useState(15)
+  const [clipboardClearSeconds, setClipboardClearSeconds] = useState(30)
+  const [passwordHistoryLimit, setPasswordHistoryLimit] = useState(5)
+  const [recoveryKeyDisplay, setRecoveryKeyDisplay] = useState('')
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false)
+  const [recoverOpen, setRecoverOpen] = useState(false)
+  const [restoreFile, setRestoreFile] = useState(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [linkState, setLinkState] = useState({ state: 'idle', detail: '' })
   const [peerName, setPeerName] = useState('')
@@ -969,18 +1092,27 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (status !== 'unlocked') return undefined
+    if (status !== 'unlocked' || autoLockMinutes === 0) return undefined
     let timer
+    let lastActiveAt = Date.now()
     const reset = () => {
+      lastActiveAt = Date.now()
       window.clearTimeout(timer)
       timer = window.setTimeout(() => lockVault(), autoLockMinutes * 60_000)
     }
+    const checkWake = () => {
+      if (Date.now() - lastActiveAt >= autoLockMinutes * 60_000) lockVault()
+    }
     const events = ['pointerdown', 'keydown']
     events.forEach((event) => window.addEventListener(event, reset, { passive: true }))
+    document.addEventListener('visibilitychange', checkWake)
+    window.addEventListener('focus', checkWake)
     reset()
     return () => {
       window.clearTimeout(timer)
       events.forEach((event) => window.removeEventListener(event, reset))
+      document.removeEventListener('visibilitychange', checkWake)
+      window.removeEventListener('focus', checkWake)
     }
   }, [status, autoLockMinutes])
 
@@ -1043,6 +1175,18 @@ export default function App() {
     window.setTimeout(() => setToast((current) => current?.message === message ? null : current), 2600)
   }
 
+  function applyPreferences(preferences) {
+    const normalized = normalizePreferences(preferences)
+    setAutoLockMinutes(normalized.autoLockMinutes)
+    setClipboardClearSeconds(normalized.clipboardClearSeconds)
+    setPasswordHistoryLimit(normalized.passwordHistoryLimit)
+    return normalized
+  }
+
+  function currentPreferences(overrides = {}) {
+    return normalizePreferences({ autoLockMinutes, clipboardClearSeconds, passwordHistoryLimit, ...overrides })
+  }
+
   async function handleIncomingEnvelope(incoming) {
     try {
       await writeQueueRef.current.catch(() => {})
@@ -1089,7 +1233,7 @@ export default function App() {
       committedEntriesRef.current = syncedItems
       setEnvelope(incoming)
       setEntries(syncedItems)
-      setAutoLockMinutes(payload.preferences?.autoLockMinutes || 10)
+      applyPreferences(payload.preferences)
       setSelectedId((current) => syncedItems.some((entry) => entry.id === current) ? current : syncedItems[0]?.id || '')
       showToast('Encrypted changes received from your other device')
       setLinkState({ state: 'connected', detail: 'Encrypted vault synced just now' })
@@ -1110,7 +1254,7 @@ export default function App() {
     try {
       const currentEntries = entriesRef.current
       const nextItems = keepSamples ? currentEntries : currentEntries.filter((entry) => !entry.id.startsWith('sample-'))
-      const payload = { schemaVersion: 1, items: nextItems, preferences: { autoLockMinutes } }
+      const payload = { schemaVersion: 2, items: nextItems, preferences: currentPreferences() }
       const created = await createVault(password, payload)
       sessionRef.current += 1
       dataKeyRef.current = created.dataKey
@@ -1123,6 +1267,7 @@ export default function App() {
       setStatus('unlocked')
       setLockNotice('')
       setOnboardingOpen(false)
+      setRecoveryKeyDisplay(created.recoveryKey || '')
       showToast('Encrypted vault created')
     } finally {
       setBusy(false)
@@ -1140,7 +1285,7 @@ export default function App() {
         ? await unlockVaultEnvelope(password, waiting)
         : await unlockVault(password)
       if (receivingFirstVault) {
-        await installTransferredVault(waiting)
+        await installTransferredVault(opened.envelope)
         pendingIncomingRef.current = null
       }
       let nextEnvelope = opened.envelope
@@ -1165,7 +1310,7 @@ export default function App() {
       committedEntriesRef.current = openedItems
       setEnvelope(nextEnvelope)
       setEntries(openedItems)
-      setAutoLockMinutes(nextPayload.preferences?.autoLockMinutes || 10)
+      applyPreferences(nextPayload.preferences)
       setSelectedId(openedItems[0]?.id || '')
       setStatus('unlocked')
       setLockNotice('')
@@ -1228,7 +1373,9 @@ export default function App() {
       setLockNotice('')
       setPeerName('')
       setLinkState({ state: 'idle', detail: '' })
-      setAutoLockMinutes(10)
+      setAutoLockMinutes(DEFAULT_PREFERENCES.autoLockMinutes)
+      setClipboardClearSeconds(DEFAULT_PREFERENCES.clipboardClearSeconds)
+      setPasswordHistoryLimit(DEFAULT_PREFERENCES.passwordHistoryLimit)
       setLogoutOpen(false)
       setStatus('demo')
       setOnboardingOpen(true)
@@ -1239,12 +1386,12 @@ export default function App() {
     }
   }
 
-  async function queueEncryptedSnapshot(nextEntries, nextAutoLockMinutes) {
+  async function queueEncryptedSnapshot(nextEntries, preferences = currentPreferences()) {
     const session = sessionRef.current
     const key = dataKeyRef.current
     const operation = writeQueueRef.current.catch(() => {}).then(async () => {
       if (session !== sessionRef.current || !key || !envelopeRef.current) return false
-      const payload = { schemaVersion: 1, items: nextEntries, preferences: { autoLockMinutes: nextAutoLockMinutes } }
+      const payload = { schemaVersion: 2, items: nextEntries, preferences: normalizePreferences(preferences) }
       const nextEnvelope = await persistVault(key, envelopeRef.current, payload)
       if (session !== sessionRef.current) return false
       envelopeRef.current = nextEnvelope
@@ -1259,7 +1406,7 @@ export default function App() {
     entriesRef.current = nextEntries
     try {
       if (encrypted) {
-        const applied = await queueEncryptedSnapshot(nextEntries, autoLockMinutes)
+        const applied = await queueEncryptedSnapshot(nextEntries)
         if (!applied) throw new Error('The vault locked before the change could finish.')
       }
       committedEntriesRef.current = nextEntries
@@ -1278,11 +1425,49 @@ export default function App() {
     setAutoLockMinutes(minutes)
     if (!encrypted) return
     try {
-      const applied = await queueEncryptedSnapshot(entriesRef.current, minutes)
+      const applied = await queueEncryptedSnapshot(entriesRef.current, currentPreferences({ autoLockMinutes: minutes }))
       if (!applied) return
       showToast('Auto-lock preference encrypted & saved')
     } catch (error) {
       setAutoLockMinutes(previous)
+      showToast(mutationErrorMessage(error, 'Could not save that preference'), 'error')
+    }
+  }
+
+  async function changeClipboardClearSeconds(seconds) {
+    const previous = clipboardClearSeconds
+    setClipboardClearSeconds(seconds)
+    if (!encrypted) return
+    try {
+      const applied = await queueEncryptedSnapshot(entriesRef.current, currentPreferences({ clipboardClearSeconds: seconds }))
+      if (!applied) return
+      showToast('Clipboard timer encrypted & saved')
+    } catch (error) {
+      setClipboardClearSeconds(previous)
+      showToast(mutationErrorMessage(error, 'Could not save that preference'), 'error')
+    }
+  }
+
+  async function changePasswordHistoryLimit(limit) {
+    const previous = passwordHistoryLimit
+    const previousEntries = entriesRef.current
+    const nextEntries = previousEntries.map((entry) => ({ ...entry, passwordHistory: (entry.passwordHistory || []).slice(0, limit) }))
+    setPasswordHistoryLimit(limit)
+    entriesRef.current = nextEntries
+    if (!encrypted) {
+      setEntries(nextEntries)
+      committedEntriesRef.current = nextEntries
+      return
+    }
+    try {
+      const applied = await queueEncryptedSnapshot(nextEntries, currentPreferences({ passwordHistoryLimit: limit }))
+      if (!applied) return
+      committedEntriesRef.current = nextEntries
+      setEntries(nextEntries)
+      showToast('Password-history retention encrypted & saved')
+    } catch (error) {
+      entriesRef.current = previousEntries
+      setPasswordHistoryLimit(previous)
       showToast(mutationErrorMessage(error, 'Could not save that preference'), 'error')
     }
   }
@@ -1299,9 +1484,12 @@ export default function App() {
     const passwordChangedAt = !previous || previous.password !== form.password
       ? now
       : previous.passwordChangedAt || previous.updatedAt || previous.createdAt || now
+    const passwordHistory = previous && previous.password !== form.password && passwordHistoryLimit > 0
+      ? [{ password: previous.password, changedAt: now }, ...(previous.passwordHistory || [])].slice(0, passwordHistoryLimit)
+      : (previous?.passwordHistory || form.passwordHistory || []).slice(0, passwordHistoryLimit)
     const item = form.id
-      ? { ...form, passwordChangedAt, updatedAt: now }
-      : { ...form, id: crypto.randomUUID(), tags: form.tags || [], createdAt: now, passwordChangedAt, updatedAt: now, lastUsed: 'Never' }
+      ? { ...form, revision: (previous?.revision || 1) + 1, encryptionVersion: 2, passwordHistory, passwordChangedAt, updatedAt: now }
+      : { ...form, id: crypto.randomUUID(), revision: 1, encryptionVersion: 2, passwordHistory: [], tags: form.tags || [], createdAt: now, passwordChangedAt, updatedAt: now, lastUsed: 'Never' }
     const next = form.id ? currentEntries.map((entry) => entry.id === form.id ? item : entry) : [item, ...currentEntries]
     try {
       await commitEntries(next)
@@ -1315,7 +1503,8 @@ export default function App() {
 
   async function quickUpdate(entry) {
     try {
-      await commitEntries(entriesRef.current.map((item) => item.id === entry.id ? entry : item))
+      const now = new Date().toISOString()
+      await commitEntries(entriesRef.current.map((item) => item.id === entry.id ? { ...entry, revision: (item.revision || 1) + 1, encryptionVersion: 2, updatedAt: now } : item))
     } catch (error) {
       showToast(mutationErrorMessage(error, 'Could not save that change'), 'error')
     }
@@ -1323,11 +1512,22 @@ export default function App() {
 
   async function markEntryUsed(id) {
     const now = new Date().toISOString()
-    const next = entriesRef.current.map((entry) => entry.id === id ? { ...entry, lastUsed: 'Just now', lastUsedAt: now } : entry)
+    const next = entriesRef.current.map((entry) => entry.id === id ? { ...entry, revision: (entry.revision || 1) + 1, encryptionVersion: 2, updatedAt: now, lastUsed: 'Just now', lastUsedAt: now } : entry)
     try {
       await commitEntries(next)
     } catch (error) {
       showToast(mutationErrorMessage(error, 'Could not update recent activity'), 'error')
+    }
+  }
+
+  async function clearPasswordHistory(entry) {
+    try {
+      const now = new Date().toISOString()
+      const next = entriesRef.current.map((item) => item.id === entry.id ? { ...item, passwordHistory: [], revision: (item.revision || 1) + 1, updatedAt: now } : item)
+      await commitEntries(next)
+      showToast('Encrypted password history deleted')
+    } catch (error) {
+      showToast(mutationErrorMessage(error, 'Could not delete password history'), 'error')
     }
   }
 
@@ -1349,18 +1549,94 @@ export default function App() {
     try {
       await navigator.clipboard.writeText(value)
       copiedValueRef.current = value
-      setClipboardState({ id: crypto.randomUUID(), label, remaining: 30, deadline: Date.now() + 30_000 })
-      showToast(`${label} copied · clearing in 30s`)
+      setClipboardState({ id: crypto.randomUUID(), label, remaining: clipboardClearSeconds, deadline: Date.now() + clipboardClearSeconds * 1000 })
+      showToast(`${label} copied · clearing in ${clipboardClearSeconds}s`)
     } catch {
       showToast('Clipboard permission was blocked', 'error')
     }
   }
 
   async function importEntries(items) {
-    const next = [...items, ...entriesRef.current]
+    const nextItems = normalizePasswordDates(items)
+    const next = [...nextItems, ...entriesRef.current]
     await commitEntries(next)
-    setSelectedId(items[0]?.id || selectedId)
-    showToast(`${items.length} secrets imported`)
+    setSelectedId(nextItems[0]?.id || selectedId)
+    showToast(`${nextItems.length} secrets imported`)
+  }
+
+  async function updateMasterPassword(currentPassword, nextPassword) {
+    setBusy(true)
+    try {
+      await writeQueueRef.current.catch(() => {})
+      const changed = await changeMasterPassword(currentPassword, nextPassword, envelopeRef.current)
+      sessionRef.current += 1
+      dataKeyRef.current = changed.dataKey
+      envelopeRef.current = changed.envelope
+      setEnvelope(changed.envelope)
+      setChangePasswordOpen(false)
+      showToast('Master password changed · vault key rewrapped')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function recoverWithKey(recoveryKey, nextPassword) {
+    setBusy(true)
+    try {
+      const recovered = await recoverVault(recoveryKey, nextPassword)
+      const openedItems = normalizePasswordDates(recovered.payload.items)
+      sessionRef.current += 1
+      dataKeyRef.current = recovered.dataKey
+      envelopeRef.current = recovered.envelope
+      entriesRef.current = openedItems
+      committedEntriesRef.current = openedItems
+      setEnvelope(recovered.envelope)
+      setEntries(openedItems)
+      applyPreferences(recovered.payload.preferences)
+      setSelectedId(openedItems[0]?.id || '')
+      setRecoverOpen(false)
+      setStatus('unlocked')
+      setLockNotice('')
+      showToast('Vault recovered · old master password replaced')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function chooseRestoreFile(file) {
+    if (file.size > 50 * 1024 * 1024) {
+      showToast('That backup is over the 50 MB restore limit', 'error')
+      return
+    }
+    setRestoreFile(file)
+  }
+
+  async function restoreArchive(password) {
+    setBusy(true)
+    try {
+      await writeQueueRef.current.catch(() => {})
+      const serialized = await restoreFile.text()
+      const incoming = deserializeEnvelope(serialized)
+      const opened = await unlockVaultEnvelope(password, incoming)
+      await restoreVaultArchive(opened.envelope, { replace: Boolean(await readStoredVault()) })
+      const openedItems = normalizePasswordDates(opened.payload.items)
+      sessionRef.current += 1
+      writeQueueRef.current = Promise.resolve()
+      dataKeyRef.current = opened.dataKey
+      envelopeRef.current = opened.envelope
+      entriesRef.current = openedItems
+      committedEntriesRef.current = openedItems
+      setEnvelope(opened.envelope)
+      setEntries(openedItems)
+      applyPreferences(opened.payload.preferences)
+      setSelectedId(openedItems[0]?.id || '')
+      setRestoreFile(null)
+      setOnboardingOpen(false)
+      setStatus('unlocked')
+      showToast('Encrypted backup authenticated & restored')
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function exportArchive() {
@@ -1370,7 +1646,7 @@ export default function App() {
       const blob = new Blob([serializeEnvelope(stored, 2)], { type: 'application/json' })
       const link = document.createElement('a')
       link.href = URL.createObjectURL(blob)
-      link.download = `hush-vault-${new Date().toISOString().slice(0, 10)}.hush`
+      link.download = `hush-backup-${new Date().toISOString().slice(0, 10)}.hush`
       link.click()
       URL.revokeObjectURL(link.href)
       showToast('Encrypted archive downloaded')
@@ -1380,27 +1656,30 @@ export default function App() {
   }
 
   if (status === 'checking') return <div className="app-loading"><span className="brand-seal"><BrandMark /></span><i /></div>
-  if (status === 'locked') return <><LockScreen onUnlock={unlock} onLogout={() => setLogoutOpen(true)} busy={busy} notice={lockNotice} />{logoutOpen && <LogoutDialog onClose={() => setLogoutOpen(false)} onConfirm={logoutFromDevice} busy={busy} />}{toast && <div className={`toast ${toast.tone}`} role="status" key={toast.id}>{toast.tone === 'error' ? <AlertTriangle size={16} /> : <Check size={16} />}{toast.message}</div>}</>
+  if (status === 'locked') return <><LockScreen onUnlock={unlock} onRecover={() => setRecoverOpen(true)} onLogout={() => setLogoutOpen(true)} busy={busy} notice={lockNotice} />{recoverOpen && <RecoverVaultDialog onClose={() => setRecoverOpen(false)} onConfirm={recoverWithKey} busy={busy} />}{logoutOpen && <LogoutDialog onClose={() => setLogoutOpen(false)} onConfirm={logoutFromDevice} busy={busy} />}{toast && <div className={`toast ${toast.tone}`} role="status" key={toast.id}>{toast.tone === 'error' ? <AlertTriangle size={16} /> : <Check size={16} />}{toast.message}</div>}</>
 
   return (
     <div className="app-shell">
       <Sidebar view={view} setView={setView} filter={filter} setFilter={setFilter} entries={entries} encrypted={encrypted} linkState={linkState} onLock={lockVault} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} />
       <div className="mobile-header"><button className="brand-seal" type="button" onClick={() => setView('vault')} aria-label="Open vault"><BrandMark /></button><strong>hush.</strong><span className={encrypted ? 'encrypted' : 'demo'}>{encrypted ? 'Encrypted' : 'Demo'}</span><button className="icon-button" type="button" onClick={lockVault} aria-label={encrypted ? 'Lock vault' : 'Protect this vault'}><Lock size={18} /></button></div>
       <div className="main-area">
-        {view === 'vault' && <VaultView entries={entries} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} selectedId={selectedId} setSelectedId={setSelectedId} searchRef={searchRef} onAdd={() => openEditor()} onEdit={(entry, quick) => quick ? quickUpdate(entry) : openEditor(entry)} onDelete={setDeleteTarget} onCopy={copyValue} onUse={markEntryUsed} clipboardState={clipboardState} encrypted={encrypted} linkState={linkState} onSecurity={() => setView('security')} onHelp={() => showToast('Tip: press Ctrl or ⌘ + K to jump to search')} />}
+        {view === 'vault' && <VaultView entries={entries} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} selectedId={selectedId} setSelectedId={setSelectedId} searchRef={searchRef} onAdd={() => openEditor()} onEdit={(entry, quick) => quick ? quickUpdate(entry) : openEditor(entry)} onDelete={setDeleteTarget} onClearHistory={clearPasswordHistory} onCopy={copyValue} onUse={markEntryUsed} clipboardState={clipboardState} encrypted={encrypted} linkState={linkState} onSecurity={() => setView('security')} onHelp={() => showToast('Tip: press Ctrl or ⌘ + K to jump to search')} />}
         {view === 'security' && <SecurityView entries={entries} onBackToVault={(id) => { setSelectedId(id); setFilter('risk'); setView('vault') }} />}
         {view === 'import' && <ImportView entries={entries} onImport={importEntries} onDone={() => { setFilter('all'); setView('vault') }} encrypted={encrypted} />}
-        {view === 'settings' && <SettingsView encrypted={encrypted} autoLockMinutes={autoLockMinutes} setAutoLockMinutes={changeAutoLockMinutes} onExport={exportArchive} onLock={lockVault} onProtect={() => setOnboardingOpen(true)} onLogout={() => setLogoutOpen(true)} deviceLink={{ linkState, peerName, onCreateOffer: () => linkRef.current.createOffer(), onAcceptOffer: (code) => linkRef.current.acceptOffer(code), onAcceptAnswer: (code) => linkRef.current.acceptAnswer(code), onDisconnect: () => linkRef.current?.close() }} installApp={{ installed: appInstalled, canInstall: Boolean(installPrompt), onInstall: installCurrentApp }} />}
+        {view === 'settings' && <SettingsView encrypted={encrypted} autoLockMinutes={autoLockMinutes} setAutoLockMinutes={changeAutoLockMinutes} clipboardClearSeconds={clipboardClearSeconds} setClipboardClearSeconds={changeClipboardClearSeconds} passwordHistoryLimit={passwordHistoryLimit} setPasswordHistoryLimit={changePasswordHistoryLimit} onExport={exportArchive} onRestoreFile={chooseRestoreFile} onChangePassword={() => setChangePasswordOpen(true)} onLock={lockVault} onProtect={() => setOnboardingOpen(true)} onLogout={() => setLogoutOpen(true)} deviceLink={{ linkState, peerName, onCreateOffer: () => linkRef.current.createOffer(), onAcceptOffer: (code) => linkRef.current.acceptOffer(code), onAcceptAnswer: (code) => linkRef.current.acceptAnswer(code), onDisconnect: () => linkRef.current?.close() }} installApp={{ installed: appInstalled, canInstall: Boolean(installPrompt), onInstall: installCurrentApp }} />}
       </div>
       <nav className="mobile-nav" aria-label="Mobile navigation">
         {navItems.slice(0, 2).map(({ id, label, icon: Icon }) => <button type="button" aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} key={id} onClick={() => setView(id)}><Icon size={19} /><span>{label}</span></button>)}
         <button type="button" className="mobile-add" onClick={() => openEditor()} aria-label="Add new password" title="Add new password"><Plus size={22} /></button>
         {navItems.slice(2).map(({ id, label, icon: Icon }) => <button type="button" aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} key={id} onClick={() => setView(id)}><Icon size={19} /><span>{label}</span></button>)}
       </nav>
-      {editorOpen && <EntryEditor entry={editorEntry} onClose={() => setEditorOpen(false)} onSave={saveEntry} />}
+      {editorOpen && <EntryEditor entry={editorEntry} onClose={() => setEditorOpen(false)} onSave={saveEntry} onCopy={copyValue} />}
       {deleteTarget && <DeleteDialog entry={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={confirmDelete} />}
       {logoutOpen && <LogoutDialog onClose={() => setLogoutOpen(false)} onConfirm={logoutFromDevice} busy={busy} />}
+      {changePasswordOpen && <ChangePasswordDialog onClose={() => setChangePasswordOpen(false)} onConfirm={updateMasterPassword} busy={busy} />}
+      {restoreFile && <RestoreDialog file={restoreFile} replacing={encrypted} onClose={() => setRestoreFile(null)} onConfirm={restoreArchive} busy={busy} />}
       {onboardingOpen && <Onboarding onClose={() => setOnboardingOpen(false)} onCreate={createEncryptedVault} onLink={() => { setOnboardingOpen(false); setView('settings') }} busy={busy} sampleCount={entries.filter((entry) => entry.id.startsWith('sample-')).length} />}
+      {recoveryKeyDisplay && <RecoveryKeyDialog recoveryKey={recoveryKeyDisplay} onCopy={copyValue} onClose={() => setRecoveryKeyDisplay('')} />}
       {toast && <div className={`toast ${toast.tone}`} role="status" key={toast.id}>{toast.tone === 'error' ? <AlertTriangle size={16} /> : <Check size={16} />}{toast.message}</div>}
     </div>
   )

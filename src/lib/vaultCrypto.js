@@ -1,15 +1,21 @@
+import {
+  benchmarkArgon2id,
+  changeMasterPasswordEnvelope,
+  createVaultEnvelope,
+  CURRENT_FORMAT,
+  DEFAULT_ARGON2_PARAMS,
+  LEGACY_FORMAT,
+  LEGACY_PBKDF2_ITERATIONS,
+  migrateLegacyVaultEnvelope,
+  openCurrentVaultEnvelope,
+  openVaultWithDataKey,
+  persistVaultEnvelope,
+  recoverAndRewrapVaultEnvelope,
+} from './vaultCryptoCore.js'
+
 const DB_NAME = 'hush-encrypted-vault'
 const STORE_NAME = 'vaults'
 const RECORD_KEY = 'primary'
-const FORMAT = 'hush-vault-v1'
-const ITERATIONS = 600_000
-const encoder = new TextEncoder()
-const decoder = new TextDecoder()
-const WRAP_AAD = encoder.encode(`${FORMAT}:wrapped-key`)
-const PAYLOAD_AAD = encoder.encode(`${FORMAT}:payload`)
-
-const randomBytes = (size) => crypto.getRandomValues(new Uint8Array(size))
-const syncMetadata = () => ({ changeId: crypto.randomUUID(), changedAt: new Date().toISOString() })
 
 function openDatabase() {
   return new Promise((resolve, reject) => {
@@ -74,51 +80,6 @@ async function replaceStoredVault(expectedRevision, nextEnvelope) {
   })
 }
 
-async function deriveWrappingKey(password, salt, iterations = ITERATIONS) {
-  const passwordMaterial = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(password.normalize('NFKC')),
-    'PBKDF2',
-    false,
-    ['deriveKey'],
-  )
-  return crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
-    passwordMaterial,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt'],
-  )
-}
-
-async function encryptPayload(dataKey, payload) {
-  const iv = randomBytes(12)
-  const plaintext = encoder.encode(JSON.stringify(payload))
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv, additionalData: PAYLOAD_AAD, tagLength: 128 },
-    dataKey,
-    plaintext,
-  )
-  plaintext.fill(0)
-  return { algorithm: 'AES-GCM', iv, ciphertext }
-}
-
-async function decryptPayload(dataKey, envelope) {
-  const plaintext = await crypto.subtle.decrypt(
-    {
-      name: 'AES-GCM',
-      iv: envelope.payload.iv,
-      additionalData: PAYLOAD_AAD,
-      tagLength: 128,
-    },
-    dataKey,
-    envelope.payload.ciphertext,
-  )
-  const payload = JSON.parse(decoder.decode(plaintext))
-  if (payload?.schemaVersion !== 1 || !Array.isArray(payload.items)) throw new Error('Invalid vault schema')
-  return payload
-}
-
 export async function readStoredVault() {
   return transact('readonly', (store) => store.get(RECORD_KEY))
 }
@@ -127,91 +88,80 @@ export async function hasStoredVault() {
   return Boolean(await readStoredVault())
 }
 
-export async function createVault(password, payload) {
+export async function createVault(password, payload, options) {
   if (await readStoredVault()) throw new Error('An encrypted vault already exists in this browser.')
-  const salt = randomBytes(16)
-  const wrappingKey = await deriveWrappingKey(password, salt)
-  const rawDataKey = randomBytes(32)
-  const dataKey = await crypto.subtle.importKey('raw', rawDataKey, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
-  const wrapIv = randomBytes(12)
-  const wrappedCiphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: wrapIv, additionalData: WRAP_AAD, tagLength: 128 },
-    wrappingKey,
-    rawDataKey,
-  )
-  rawDataKey.fill(0)
-  const envelope = {
-    format: FORMAT,
-    revision: 1,
-    sync: syncMetadata(),
-    kdf: { name: 'PBKDF2', hash: 'SHA-256', iterations: ITERATIONS, salt },
-    wrappedKey: { algorithm: 'AES-GCM', iv: wrapIv, ciphertext: wrappedCiphertext },
-    payload: await encryptPayload(dataKey, payload),
-  }
-  await transact('readwrite', (store) => store.add(envelope, RECORD_KEY))
-  return { dataKey, envelope }
+  const created = await createVaultEnvelope(password, payload, options)
+  await transact('readwrite', (store) => store.add(created.envelope, RECORD_KEY))
+  return created
 }
 
 export async function unlockVaultEnvelope(password, envelope) {
-  if (!envelope || envelope.format !== FORMAT) throw new Error('Unsupported or missing vault')
-  try {
-    const wrappingKey = await deriveWrappingKey(password, envelope.kdf.salt, envelope.kdf.iterations)
-    const rawDataKey = new Uint8Array(await crypto.subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: envelope.wrappedKey.iv,
-        additionalData: WRAP_AAD,
-        tagLength: 128,
-      },
-      wrappingKey,
-      envelope.wrappedKey.ciphertext,
-    ))
-    const dataKey = await crypto.subtle.importKey('raw', rawDataKey, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
-    rawDataKey.fill(0)
-    const payload = await decryptPayload(dataKey, envelope)
-    return { dataKey, envelope, payload }
-  } catch {
-    throw new Error('Couldn’t unlock this vault.')
-  }
+  if (envelope?.format === LEGACY_FORMAT) return migrateLegacyVaultEnvelope(password, envelope)
+  return openCurrentVaultEnvelope(password, envelope)
 }
 
 export async function unlockVault(password) {
-  return unlockVaultEnvelope(password, await readStoredVault())
+  const stored = await readStoredVault()
+  const opened = await unlockVaultEnvelope(password, stored)
+  if (opened.migrated) await replaceStoredVault(stored.revision || 0, opened.envelope)
+  return opened
 }
 
 export async function persistVault(dataKey, envelope, payload) {
-  const expectedRevision = envelope.revision || 0
-  const nextEnvelope = {
-    ...envelope,
-    revision: expectedRevision + 1,
-    sync: syncMetadata(),
-    payload: await encryptPayload(dataKey, payload),
-  }
-  await replaceStoredVault(expectedRevision, nextEnvelope)
+  const nextEnvelope = await persistVaultEnvelope(dataKey, envelope, payload)
+  await replaceStoredVault(envelope.revision || 0, nextEnvelope)
   return nextEnvelope
 }
 
 export async function openVaultEnvelope(dataKey, envelope) {
-  if (!dataKey || envelope?.format !== FORMAT) throw new Error('Unsupported or missing vault')
+  if (!dataKey || envelope?.format !== CURRENT_FORMAT) throw new Error('Unsupported or missing vault.')
   try {
-    return await decryptPayload(dataKey, envelope)
+    return await openVaultWithDataKey(dataKey, envelope)
   } catch {
     throw new Error('The linked device sent a vault that could not be authenticated.')
   }
 }
 
+export async function changeMasterPassword(oldPassword, newPassword, envelope = null) {
+  const stored = envelope || await readStoredVault()
+  const changed = await changeMasterPasswordEnvelope(stored, oldPassword, newPassword)
+  await replaceStoredVault(stored.revision || 0, changed.envelope)
+  return changed
+}
+
+export async function recoverVault(recoveryKey, newPassword, envelope = null) {
+  const stored = envelope || await readStoredVault()
+  const recovered = await recoverAndRewrapVaultEnvelope(stored, recoveryKey, newPassword)
+  await replaceStoredVault(stored.revision || 0, recovered.envelope)
+  return recovered
+}
+
 export async function installTransferredVault(envelope) {
-  if (envelope?.format !== FORMAT) throw new Error('Unsupported or missing vault')
+  if (![CURRENT_FORMAT, LEGACY_FORMAT].includes(envelope?.format)) throw new Error('Unsupported or missing vault.')
   await transact('readwrite', (store) => store.add(envelope, RECORD_KEY))
 }
 
 export async function applyTransferredVault(expectedRevision, envelope) {
-  if (envelope?.format !== FORMAT) throw new Error('Unsupported or missing vault')
+  if (envelope?.format !== CURRENT_FORMAT) throw new Error('Unsupported or missing vault.')
   await replaceStoredVault(expectedRevision, envelope)
+}
+
+export async function restoreVaultArchive(envelope, { replace = false } = {}) {
+  if (![CURRENT_FORMAT, LEGACY_FORMAT].includes(envelope?.format)) throw new Error('Unsupported or missing vault.')
+  const current = await readStoredVault()
+  if (current && !replace) throw new Error('A local vault already exists. Confirm replacement before restoring.')
+  if (current) await replaceStoredVault(current.revision || 0, envelope)
+  else await transact('readwrite', (store) => store.add(envelope, RECORD_KEY))
+  return envelope
 }
 
 export async function deleteStoredVault() {
   return transact('readwrite', (store) => store.delete(RECORD_KEY))
 }
 
-export { FORMAT, ITERATIONS }
+export {
+  benchmarkArgon2id,
+  CURRENT_FORMAT as FORMAT,
+  DEFAULT_ARGON2_PARAMS as ARGON2_PARAMS,
+  LEGACY_PBKDF2_ITERATIONS as ITERATIONS,
+}

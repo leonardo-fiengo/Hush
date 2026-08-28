@@ -1,6 +1,8 @@
 import { deflateSync, inflateSync, strFromU8, strToU8 } from 'fflate'
 
-const TRANSFER_FORMAT = 'hush-device-envelope-v1'
+const TRANSFER_FORMAT = 'hush-device-envelope-v2'
+const LEGACY_TRANSFER_FORMAT = 'hush-device-envelope-v1'
+const SUPPORTED_VAULT_FORMATS = new Set(['hush-vault-v1', 'hush-vault-v2'])
 const PAIRING_FORMAT = 'hush-pair-v1'
 const PAIRING_QR_PREFIX = 'HUSHQR1-'
 
@@ -22,8 +24,15 @@ function bytesToBase64(value) {
 }
 
 function base64ToBytes(value) {
-  if (typeof value !== 'string' || !value) throw new Error('Invalid encrypted byte field.')
-  const binary = atob(value)
+  if (typeof value !== 'string' || !value || value.length > 70_000_000 || !/^[A-Za-z0-9+/]+={0,2}$/u.test(value)) {
+    throw new Error('Invalid encrypted byte field.')
+  }
+  let binary
+  try {
+    binary = atob(value)
+  } catch {
+    throw new Error('Invalid encrypted byte field.')
+  }
   const bytes = new Uint8Array(binary.length)
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
   return bytes
@@ -50,10 +59,12 @@ function base64UrlToBytes(value) {
 }
 
 export function envelopeToTransfer(envelope) {
-  if (!envelope || envelope.format !== 'hush-vault-v1') throw new Error('This is not a supported Hush vault.')
-  return {
-    transferFormat: TRANSFER_FORMAT,
+  if (!envelope || !SUPPORTED_VAULT_FORMATS.has(envelope.format)) throw new Error('This is not a supported Hush vault.')
+  const transfer = {
+    transferFormat: envelope.format === 'hush-vault-v2' ? TRANSFER_FORMAT : LEGACY_TRANSFER_FORMAT,
     format: envelope.format,
+    encryptionVersion: envelope.encryptionVersion,
+    vaultId: envelope.vaultId,
     revision: Number(envelope.revision) || 0,
     sync: envelope.sync || null,
     kdf: { ...envelope.kdf, salt: bytesToBase64(envelope.kdf?.salt) },
@@ -68,15 +79,39 @@ export function envelopeToTransfer(envelope) {
       ciphertext: bytesToBase64(envelope.payload?.ciphertext),
     },
   }
+  if (envelope.recovery) {
+    transfer.recovery = {
+      kdf: { ...envelope.recovery.kdf, salt: bytesToBase64(envelope.recovery.kdf?.salt) },
+      wrappedKey: {
+        ...envelope.recovery.wrappedKey,
+        iv: bytesToBase64(envelope.recovery.wrappedKey?.iv),
+        ciphertext: bytesToBase64(envelope.recovery.wrappedKey?.ciphertext),
+      },
+    }
+  } else if (envelope.format === 'hush-vault-v2') {
+    transfer.recovery = null
+  }
+  if (envelope.integrity) {
+    transfer.integrity = {
+      ...envelope.integrity,
+      iv: bytesToBase64(envelope.integrity?.iv),
+      ciphertext: bytesToBase64(envelope.integrity?.ciphertext),
+    }
+  }
+  return transfer
 }
 
 export function transferToEnvelope(transfer) {
-  if (!transfer || transfer.transferFormat !== TRANSFER_FORMAT || transfer.format !== 'hush-vault-v1') {
+  const validTransferFormat = transfer?.transferFormat === TRANSFER_FORMAT || transfer?.transferFormat === LEGACY_TRANSFER_FORMAT
+  if (!transfer || !validTransferFormat || !SUPPORTED_VAULT_FORMATS.has(transfer.format)) {
     throw new Error('This is not a supported Hush device transfer.')
   }
   if (!transfer.kdf || !transfer.wrappedKey || !transfer.payload) throw new Error('The encrypted vault is incomplete.')
-  return {
+  if (transfer.format === 'hush-vault-v2' && (!transfer.vaultId || !transfer.integrity)) throw new Error('The encrypted vault is incomplete.')
+  const envelope = {
     format: transfer.format,
+    encryptionVersion: transfer.encryptionVersion,
+    vaultId: transfer.vaultId,
     revision: Number(transfer.revision) || 0,
     sync: transfer.sync || undefined,
     kdf: { ...transfer.kdf, salt: base64ToBytes(transfer.kdf.salt) },
@@ -91,6 +126,27 @@ export function transferToEnvelope(transfer) {
       ciphertext: base64ToBytes(transfer.payload.ciphertext),
     },
   }
+  if (transfer.recovery) {
+    if (!transfer.recovery.kdf || !transfer.recovery.wrappedKey) throw new Error('The recovery data is incomplete.')
+    envelope.recovery = {
+      kdf: { ...transfer.recovery.kdf, salt: base64ToBytes(transfer.recovery.kdf.salt) },
+      wrappedKey: {
+        ...transfer.recovery.wrappedKey,
+        iv: base64ToBytes(transfer.recovery.wrappedKey.iv),
+        ciphertext: base64ToBytes(transfer.recovery.wrappedKey.ciphertext),
+      },
+    }
+  } else if (transfer.format === 'hush-vault-v2') {
+    envelope.recovery = null
+  }
+  if (transfer.integrity) {
+    envelope.integrity = {
+      ...transfer.integrity,
+      iv: base64ToBytes(transfer.integrity.iv),
+      ciphertext: base64ToBytes(transfer.integrity.ciphertext),
+    }
+  }
+  return envelope
 }
 
 export function serializeEnvelope(envelope, spacing = 0) {
@@ -100,10 +156,18 @@ export function serializeEnvelope(envelope, spacing = 0) {
 }
 
 export function deserializeEnvelope(value) {
-  return transferToEnvelope(typeof value === 'string' ? JSON.parse(value) : value)
+  if (typeof value === 'string' && value.length > 70_000_000) throw new Error('That Hush archive is too large.')
+  let transfer
+  try {
+    transfer = typeof value === 'string' ? JSON.parse(value) : value
+  } catch {
+    throw new Error('That file is not a valid Hush archive.')
+  }
+  return transferToEnvelope(transfer)
 }
 
 export function vaultIdentity(envelope) {
+  if (envelope?.format === 'hush-vault-v2' && envelope.vaultId) return envelope.vaultId
   if (!envelope?.kdf?.salt || !envelope?.wrappedKey?.ciphertext) return ''
   return `${bytesToBase64(envelope.kdf.salt)}:${bytesToBase64(envelope.wrappedKey.ciphertext)}`
 }
