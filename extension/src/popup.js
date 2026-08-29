@@ -2,6 +2,7 @@ import { masterPasswordHealth } from '../../src/lib/passwordRisk.js'
 
 const app = document.querySelector('#app')
 let selectedArchive = ''
+const HUSH_WEB_URL = 'https://hush-password-manager.vercel.app/'
 
 function message(payload) {
   return new Promise((resolve) => chrome.runtime.sendMessage(payload, (response) => {
@@ -32,7 +33,7 @@ function errorNode(text) {
 
 async function currentSite() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  if (!tab?.url || !['http:', 'https:'].includes(new URL(tab.url).protocol)) return null
+  if (!tab?.url || new URL(tab.url).protocol !== 'https:') return null
   const url = new URL(tab.url)
   return { tab, url, pattern: `${url.protocol}//${url.hostname}/*` }
 }
@@ -68,6 +69,7 @@ async function renderUnlocked(state) {
     })
     accessButton.disabled = enabled
   }
+  const openButton = element('button', { className: 'primary', text: 'Open Hush', onclick: () => chrome.tabs.create({ url: chrome.runtime.getURL('vault.html') }) })
   const lockButton = element('button', { className: 'secondary', text: 'Lock now', onclick: async () => { await message({ action: 'lock' }); await render() } })
   const exportButton = element('button', { className: 'text-button', text: 'Download encrypted backup', onclick: async () => {
     const response = await message({ action: 'export-vault' })
@@ -86,6 +88,7 @@ async function renderUnlocked(state) {
       element('p', { className: 'eyebrow', text: 'VAULT UNLOCKED' }),
       element('h1', { text: `${state.itemCount} encrypted ${state.itemCount === 1 ? 'item' : 'items'}` }),
       element('p', { className: 'copy', text: 'Hush fills only after you click its field button and only on an exact approved hostname.' }),
+      openButton,
       accessButton,
       lockButton,
       exportButton,
@@ -108,7 +111,7 @@ function renderRecoveryKey(recoveryKey) {
   app.append(brand(), element('section', { className: 'card' }, element('p', { className: 'eyebrow', text: 'ONE-TIME RECOVERY KEY' }), element('h1', { text: 'Save this offline.' }), element('p', { className: 'copy', text: 'Hush will never show it again. Anyone with this key and your encrypted vault can recover the vault.' }), element('code', { className: 'recovery', text: recoveryKey }), copyButton, element('label', { className: 'confirm' }, confirmed, element('span', { text: 'I saved the recovery key' })), continueButton))
 }
 
-function renderCreateOrImport() {
+function renderCreateOrImport(state) {
   app.replaceChildren()
   const password = element('input', { type: 'password', autocomplete: 'new-password', placeholder: 'Long master passphrase' })
   const confirmation = element('input', { type: 'password', autocomplete: 'new-password', placeholder: 'Confirm passphrase' })
@@ -135,15 +138,16 @@ function renderCreateOrImport() {
     importButton.textContent = `Authenticate ${selected.name}`
   })
   const importPassword = element('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Backup master password' })
-  const importButton = element('button', { className: 'secondary', text: 'Choose a .hush backup first', onclick: async () => {
+  const importButton = element('button', { className: 'secondary', text: state.externalArchiveWaiting ? 'Authenticate staged web vault' : 'Choose a .hush backup first', onclick: async () => {
     const response = await message({ action: 'import-vault', archive: selectedArchive, password: importPassword.value })
     importPassword.value = ''
     selectedArchive = ''
     if (!response.ok) status.replaceChildren(errorNode(response.error))
     else await render()
   } })
-  importButton.disabled = true
-  app.append(brand(), element('section', { className: 'card' }, element('p', { className: 'eyebrow', text: 'LOCAL EXTENSION VAULT' }), element('h1', { text: 'Start privately.' }), element('p', { className: 'copy', text: 'The extension owns its encrypted local vault. Create a blank vault or authenticate an encrypted Hush backup before it is stored.' }), element('label', { className: 'field' }, element('span', { text: 'New master password' }), password), element('label', { className: 'field' }, element('span', { text: 'Confirm password' }), confirmation), create, element('div', { className: 'divider', text: 'OR RESTORE' }), element('label', { className: 'file' }, element('span', { text: 'Choose .hush file' }), file), element('label', { className: 'field' }, element('span', { text: 'Backup password' }), importPassword), importButton, status))
+  importButton.disabled = !state.externalArchiveWaiting
+  const migrateButton = element('button', { className: 'text-button', text: 'Move an existing Hush web vault', onclick: () => chrome.tabs.create({ url: `${HUSH_WEB_URL}?extension=${encodeURIComponent(chrome.runtime.id)}&migrate=1` }) })
+  app.append(brand(), element('section', { className: 'card' }, element('p', { className: 'eyebrow', text: state.externalArchiveWaiting ? 'ENCRYPTED WEB VAULT READY' : 'LOCAL EXTENSION VAULT' }), element('h1', { text: 'Start privately.' }), element('p', { className: 'copy', text: state.externalArchiveWaiting ? 'Enter the web vault master password here. The website never receives it.' : 'The extension owns its encrypted local vault. Create a blank vault or authenticate an encrypted Hush backup before it is stored.' }), element('label', { className: 'field' }, element('span', { text: 'New master password' }), password), element('label', { className: 'field' }, element('span', { text: 'Confirm password' }), confirmation), create, element('div', { className: 'divider', text: 'OR RESTORE' }), element('label', { className: 'file' }, element('span', { text: 'Choose .hush file' }), file), element('label', { className: 'field' }, element('span', { text: 'Backup password' }), importPassword), importButton, migrateButton, status))
 }
 
 function renderLocked(state) {
@@ -160,17 +164,16 @@ function renderLocked(state) {
     } else await render()
   } })
   password.addEventListener('keydown', (event) => { if (event.key === 'Enter') unlock.click() })
-  app.append(brand(), element('section', { className: 'card' }, element('p', { className: 'eyebrow', text: state.externalArchiveWaiting ? 'ENCRYPTED VAULT WAITING' : 'VAULT SEALED' }), element('h1', { text: 'Welcome back.' }), element('p', { className: 'copy', text: 'The usable vault key exists only in extension memory until Hush locks or the browser restarts.' }), element('label', { className: 'field' }, element('span', { text: 'Master password' }), password), unlock, status))
+  app.append(brand(), element('section', { className: 'card' }, element('p', { className: 'eyebrow', text: state.externalArchiveWaiting ? 'ENCRYPTED VAULT WAITING' : 'VAULT SEALED' }), element('h1', { text: 'Welcome back.' }), element('p', { className: 'copy', text: 'The vault key stays in browser-session memory across normal worker sleep and is removed on lock, timeout, extension reload, or browser restart.' }), element('label', { className: 'field' }, element('span', { text: 'Master password' }), password), unlock, status))
   password.focus()
 }
 
 async function render() {
   const state = await message({ action: 'status' })
   if (!state.ok) return app.replaceChildren(errorNode(state.error))
-  if (!state.hasVault) renderCreateOrImport()
+  if (!state.hasVault) renderCreateOrImport(state)
   else if (!state.unlocked) renderLocked(state)
   else await renderUnlocked(state)
 }
 
 void render()
-

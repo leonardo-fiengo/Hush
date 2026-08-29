@@ -2,9 +2,11 @@
 
 ## Vault authority
 
-The long-term authority is the Chromium extension/local client. Its service worker owns the encrypted local vault and the in-memory unlocked session used for autofill. The web/PWA remains a local manager and migration source; it can hand an encrypted envelope to the extension, but websites never receive the full vault.
+The Chromium extension is the authority when it is installed and connected. `chrome.storage.local` contains its authenticated encrypted envelope, the service worker enforces vault operations, and the packaged `vault.html` page provides the full manager using that same vault. Autofill and the dashboard therefore cannot diverge.
 
-Until a published extension ID is configured for the production web build, the safe handoff is an authenticated `.hush` export/import. Users should choose one active authority during this transition and avoid editing disconnected copies concurrently. A production release must finish the encrypted web-to-extension bridge and make the web manager read/write through the extension when it is installed.
+The web/PWA remains a standalone fallback and an explicit migration source for existing IndexedDB vaults. When the configured extension answers, the website stops presenting its independent manager. Its narrow external bridge can request status, open extension-owned pages, or stage an encrypted envelope. It cannot unlock the extension or request plaintext, a master password, session key material, credential lists, or individual secrets.
+
+Until a published extension ID is configured for the production web build, the safe handoff is an authenticated `.hush` export/import. Set `VITE_HUSH_EXTENSION_ID` after publication; the extension's migration link can also bootstrap its ID into that browser.
 
 ## Key hierarchy
 
@@ -54,11 +56,15 @@ Every AES-GCM operation uses a fresh 12-byte CSPRNG nonce and a 128-bit authenti
 
 ## Persistence and rollback handling
 
-The web vault uses one atomic IndexedDB object-store transaction and compare-and-swap revision checks. The extension writes a complete serialized encrypted envelope through `chrome.storage.local`. Failed authentication or migration occurs before replacement. Records inside the encrypted payload have IDs, revisions, creation/update/password-change timestamps, and an encryption version.
+The fallback web vault uses one atomic IndexedDB object-store transaction and compare-and-swap revision checks. The authoritative extension writes a complete serialized encrypted envelope through `chrome.storage.local`. Failed authentication or migration occurs before replacement. Records inside the encrypted payload have IDs, revisions, creation/update/password-change timestamps, and an encryption version.
 
 Multi-device envelopes use revision ordering and deterministic change IDs for concurrent ties. This detects local stale writes and corruption; a future hostile cloud server additionally needs a device-authenticated monotonic log to prevent replay of an older, otherwise valid envelope.
 
 ## Extension flow
+
+After authentication, Hush places only the random DEK's base64 session material, vault identity/revision, and activity timestamps in `chrome.storage.session`. Chromium keeps this area in memory, does not expose it to content scripts under Hush's access policy, and clears it on extension reload/update or browser-profile restart. A recreated service worker imports the bytes into a non-extractable Web Crypto key, authenticates and decrypts the current envelope, then overwrites the temporary byte buffer. The master password and plaintext payload are not stored in session storage.
+
+Configured inactivity is enforced both on privileged operations and with `chrome.alarms`. User activity slides the deadline. Device lock clears the session immediately; normal worker suspension does not. Pending website captures deliberately remain worker-memory-only, so a worker restart discards an unconfirmed password update safely.
 
 ```text
 approved top-level page
@@ -87,4 +93,3 @@ The generator uses rejection sampling over `crypto.getRandomValues()` to avoid m
 ## Parameter benchmark
 
 Run `npm.cmd run benchmark:kdf` on each target hardware class. The 28 August 2026 Windows x64 benchmark selected 64 MiB, three passes, parallelism one at approximately 324 ms in Node 24; see [KDF_BENCHMARK.md](KDF_BENCHMARK.md). Parameters are stored per vault so they can evolve without ambiguity.
-

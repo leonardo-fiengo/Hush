@@ -33,11 +33,15 @@ Repository controls are implemented where code can enforce them. The account/sto
 - [x] Manifest V3 and least-privilege optional per-site access.
 - [x] No custom updater or downloaded executable code.
 - [x] Extension CSP allows local code and the bundled Argon2 WebAssembly only.
+- [x] Web CSP grants `wasm-unsafe-eval` for bundled Argon2id without granting general `unsafe-eval`.
+- [x] Worker-resilient unlocked session uses trusted-context-only `chrome.storage.session`, contains no master password/plaintext payload, and is alarm-expired.
+- [x] Packaged extension dashboard and autofill use the same authoritative encrypted vault.
+- [x] Website bridge is limited to status, opening trusted extension pages, and encrypted migration staging.
 - [x] Reproducible local command: `npm.cmd run build:extension`.
 - [ ] Owner: publish only through official Chrome/Edge stores.
 - [ ] Owner: protect publisher accounts and signing/release credentials with passkeys/MFA.
 - [ ] Owner: review the exact `dist-extension` diff and permission warning before every upload.
-- [ ] Owner: configure the final store extension ID for the web-to-extension bridge.
+- [ ] Owner: configure the final store extension ID as `VITE_HUSH_EXTENSION_ID` for the production web build.
 - [ ] Owner: test update/rollback behavior from a signed prior store version.
 
 ## Verification and audit
@@ -47,4 +51,3 @@ Repository controls are implemented where code can enforce them. The account/sto
 - [ ] Independent security engineer review: KDF, key wrapping, recovery, migration, key lifetime, sync, extension messages, URL policy, form handling, storage, backup, CSP, dependencies, and release delivery.
 - [ ] Professional penetration test before recommending Hush as the sole store for users' credentials.
 - [ ] Resolve all high/critical findings and document accepted residual risks.
-

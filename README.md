@@ -1,6 +1,6 @@
 # Hush
 
-Hush is a local-first password manager with a versioned authenticated vault, installable web UI, encrypted backups, direct encrypted device transfer, password intelligence, and a least-privilege Chromium extension.
+Hush is a local-first password manager with a versioned authenticated vault, an extension-owned full manager and autofill session, an installable migration/fallback web UI, encrypted backups, direct encrypted device transfer, and password intelligence.
 
 This repository is an implemented security baseline, not an independently audited release. Read the [threat model](docs/THREAT_MODEL.md), [architecture](docs/ARCHITECTURE.md), and [release checklist](docs/RELEASE_SECURITY_CHECKLIST.md) before trusting it with real credentials.
 
@@ -40,7 +40,7 @@ Run the machine-specific KDF benchmark with:
 npm.cmd run benchmark:kdf
 ```
 
-## Web-vault features
+## Web and migration features
 
 - encrypted IndexedDB persistence with atomic revision checks;
 - lock on browser restart, manual request, inactivity, or elapsed sleep interval;
@@ -53,7 +53,9 @@ npm.cmd run benchmark:kdf
 - local CSV/TSV parsing, flexible mapping/ranges, duplicate review, and atomic encrypted import;
 - encrypted-envelope WebRTC transfer with identity and revision checks;
 - PWA installation and offline app shell;
-- strict production security headers in `vercel.json`, local fonts/scripts only, and no analytics.
+- strict production security headers in `vercel.json`, including the narrow `wasm-unsafe-eval` capability required by bundled Argon2id, local fonts/scripts only, and no analytics;
+- a ciphertext-only bridge that can detect the configured extension, open its packaged manager, and stage an encrypted legacy web vault for authenticated import;
+- no website API for master passwords, session keys, decrypted credentials, or full-vault reads from the extension.
 
 ## Build and load the Chromium extension
 
@@ -68,8 +70,10 @@ Then open the browser's extension-management page, enable developer mode, and lo
 The extension:
 
 - owns an authenticated encrypted local envelope in `chrome.storage.local`;
-- keeps the unlocked key and payload only in service-worker memory;
-- locks on restart, service-worker suspension, browser/OS idle, or configured inactivity;
+- provides the full Hush dashboard as the packaged `vault.html` extension page, backed by the same vault used for autofill;
+- keeps only DEK session material and expiry metadata in in-memory `chrome.storage.session`, never the master password or plaintext vault;
+- survives normal Manifest V3 service-worker suspension without prompting again;
+- locks on manual request, configured Hush inactivity, device lock, extension reload/update, or browser-profile restart;
 - asks for optional access one website at a time and requests no browsing-history permission;
 - validates sender ID, sender URL/origin, top-frame ID, top-tab URL, and the live tab immediately before fill;
 - performs exact hostname and port matching with URL parsing and Public Suffix List/IDN awareness;
@@ -79,7 +83,7 @@ The extension:
 - stages captures and password changes in memory, preserving the old password until the user confirms success;
 - contains no remotely loaded code or custom updater.
 
-The production web origin in `extension/manifest.json` must be verified before store publication. The final browser-store extension ID must also be configured before the web UI can use a direct encrypted management bridge. Until then, use an authenticated `.hush` handoff and keep only one actively edited authority.
+The production web origin in `extension/manifest.json` must be verified before store publication. Configure the final browser-store ID as `VITE_HUSH_EXTENSION_ID` in the production web build. The extension can also bootstrap migration by opening the website with its own ID. Until the published ID is configured, use an authenticated `.hush` handoff.
 
 ## Verification
 

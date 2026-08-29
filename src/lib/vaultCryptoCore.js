@@ -44,6 +44,19 @@ function bytesToBase64(value) {
   return btoa(binary)
 }
 
+function base64ToBytes(value, label = 'base64 value') {
+  if (typeof value !== 'string' || !value || !/^[A-Za-z0-9+/]+={0,2}$/u.test(value) || value.length % 4 !== 0) {
+    throw new Error(`Invalid ${label}.`)
+  }
+  let binary
+  try {
+    binary = atob(value)
+  } catch {
+    throw new Error(`Invalid ${label}.`)
+  }
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+}
+
 function normalizePassword(password) {
   if (typeof password !== 'string' || !password) throw new Error('A master password is required.')
   return password.normalize('NFKC')
@@ -166,6 +179,17 @@ function syncMetadata() {
 
 async function importDataKey(rawDataKey) {
   return crypto.subtle.importKey('raw', rawDataKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
+}
+
+export async function importSessionDataKey(sessionKeyMaterial) {
+  let rawDataKey
+  try {
+    rawDataKey = base64ToBytes(sessionKeyMaterial, 'session vault key')
+    if (rawDataKey.length !== 32) throw new Error('Invalid session vault key.')
+    return await importDataKey(rawDataKey)
+  } finally {
+    rawDataKey?.fill(0)
+  }
 }
 
 async function deriveArgon2WrappingKey(password, kdf) {
@@ -426,13 +450,19 @@ export async function createVaultEnvelope(password, payload, options = {}) {
     const dataKey = await importDataKey(rawDataKey)
     envelope.payload = await encryptPayload(dataKey, envelope, payload)
     envelope.integrity = await createIntegrityRecord(dataKey, envelope)
-    return { dataKey, envelope, recoveryKey: recoveryResult?.recoveryKey || null, payload: { ...payload, schemaVersion: PAYLOAD_SCHEMA_VERSION } }
+    return {
+      dataKey,
+      envelope,
+      recoveryKey: recoveryResult?.recoveryKey || null,
+      payload: { ...payload, schemaVersion: PAYLOAD_SCHEMA_VERSION },
+      ...(options.includeSessionKeyMaterial ? { sessionKeyMaterial: bytesToBase64(rawDataKey) } : {}),
+    }
   } finally {
     rawDataKey.fill(0)
   }
 }
 
-export async function openCurrentVaultEnvelope(password, envelope) {
+export async function openCurrentVaultEnvelope(password, envelope, options = {}) {
   validateCurrentEnvelope(envelope)
   let rawDataKey
   try {
@@ -441,7 +471,12 @@ export async function openCurrentVaultEnvelope(password, envelope) {
     const dataKey = await importDataKey(rawDataKey)
     await verifyIntegrity(dataKey, envelope)
     const payload = await decryptPayload(dataKey, envelope)
-    return { dataKey, envelope, payload }
+    return {
+      dataKey,
+      envelope,
+      payload,
+      ...(options.includeSessionKeyMaterial ? { sessionKeyMaterial: bytesToBase64(rawDataKey) } : {}),
+    }
   } catch {
     throw new Error('Couldn’t unlock this vault.')
   } finally {
@@ -496,7 +531,7 @@ export async function changeMasterPasswordEnvelope(envelope, oldPassword, newPas
   }
 }
 
-export async function recoverAndRewrapVaultEnvelope(envelope, recoveryKey, newPassword) {
+export async function recoverAndRewrapVaultEnvelope(envelope, recoveryKey, newPassword, options = {}) {
   validateCurrentEnvelope(envelope)
   let rawDataKey
   try {
@@ -514,7 +549,12 @@ export async function recoverAndRewrapVaultEnvelope(envelope, recoveryKey, newPa
       integrity: undefined,
     }
     nextEnvelope.integrity = await createIntegrityRecord(dataKey, nextEnvelope)
-    return { dataKey, envelope: nextEnvelope, payload }
+    return {
+      dataKey,
+      envelope: nextEnvelope,
+      payload,
+      ...(options.includeSessionKeyMaterial ? { sessionKeyMaterial: bytesToBase64(rawDataKey) } : {}),
+    }
   } finally {
     rawDataKey?.fill(0)
   }
@@ -563,7 +603,7 @@ async function openLegacyEnvelope(password, envelope) {
   }
 }
 
-export async function migrateLegacyVaultEnvelope(password, legacyEnvelope) {
+export async function migrateLegacyVaultEnvelope(password, legacyEnvelope, options = {}) {
   const opened = await openLegacyEnvelope(password, legacyEnvelope)
   const rawDataKey = opened.rawDataKey
   try {
@@ -585,7 +625,13 @@ export async function migrateLegacyVaultEnvelope(password, legacyEnvelope) {
     const payload = { ...opened.legacyPayload, schemaVersion: PAYLOAD_SCHEMA_VERSION }
     envelope.payload = await encryptPayload(dataKey, envelope, payload)
     envelope.integrity = await createIntegrityRecord(dataKey, envelope)
-    return { dataKey, envelope, payload, migrated: true }
+    return {
+      dataKey,
+      envelope,
+      payload,
+      migrated: true,
+      ...(options.includeSessionKeyMaterial ? { sessionKeyMaterial: bytesToBase64(rawDataKey) } : {}),
+    }
   } finally {
     rawDataKey.fill(0)
   }

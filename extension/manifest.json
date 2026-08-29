@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "User-triggered password filling from a local Argon2id and AES-256-GCM encrypted vault.",
   "minimum_chrome_version": "120",
-  "permissions": ["activeTab", "idle", "scripting", "storage"],
+  "permissions": ["activeTab", "alarms", "idle", "scripting", "storage"],
   "optional_host_permissions": ["https://*/*"],
   "background": {
     "service_worker": "service-worker.js"
@@ -39,7 +39,7 @@
     "matches": ["https://hush-password-manager.vercel.app/*"]
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
   }
 }
 

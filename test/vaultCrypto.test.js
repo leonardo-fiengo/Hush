@@ -12,6 +12,7 @@ import {
   unlockVault,
   unlockVaultEnvelope,
 } from '../src/lib/vaultCrypto.js'
+import { createVaultEnvelope, importSessionDataKey, openVaultWithDataKey } from '../src/lib/vaultCryptoCore.js'
 import { deserializeEnvelope, serializeEnvelope } from '../src/lib/vaultTransfer.js'
 
 const encoder = new TextEncoder()
@@ -19,6 +20,15 @@ const encoder = new TextEncoder()
 function cloneEnvelope(value) {
   return structuredClone(value)
 }
+
+test('an explicitly requested browser-session key can reopen an authenticated envelope', async () => {
+  const created = await createVaultEnvelope('Session Granite Meadow Compass 74', { schemaVersion: 2, items: [{ id: 'session', password: 'kept' }] }, { includeSessionKeyMaterial: true })
+  assert.equal(typeof created.sessionKeyMaterial, 'string')
+  assert.equal(created.sessionKeyMaterial.length, 44)
+  const restoredKey = await importSessionDataKey(created.sessionKeyMaterial)
+  const payload = await openVaultWithDataKey(restoredKey, created.envelope)
+  assert.equal(payload.items[0].password, 'kept')
+})
 
 async function createLegacyEnvelope(password, payload) {
   const salt = crypto.getRandomValues(new Uint8Array(16))

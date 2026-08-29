@@ -12,13 +12,32 @@ export const EXTENSION_ACTIONS = new Set([
   'status',
   'unlock',
   'lock',
+  'touch-session',
+  'resume-vault',
+  'read-envelope',
   'create-vault',
   'import-vault',
   'export-vault',
+  'replace-payload',
+  'authenticate-envelope',
+  'install-envelope',
+  'restore-envelope',
+  'open-with-session',
+  'apply-envelope',
+  'change-master-password',
+  'recover-vault',
+  'delete-vault',
   'update-settings',
   'register-site',
   'list-sites',
   'remove-site',
+])
+
+export const EXTERNAL_ACTIONS = new Set([
+  'hush-status',
+  'open-manager',
+  'open-import',
+  'stage-encrypted-vault',
 ])
 
 export function classifyMessageSender(sender, { extensionId, extensionOrigin }) {
@@ -51,4 +70,8 @@ export function classifyMessageSender(sender, { extensionId, extensionOrigin }) 
 export function actionAllowed(kind, action) {
   if (typeof action !== 'string') return false
   return kind === 'content' ? CONTENT_ACTIONS.has(action) : kind === 'extension' ? EXTENSION_ACTIONS.has(action) : false
+}
+
+export function externalActionAllowed(action) {
+  return typeof action === 'string' && EXTERNAL_ACTIONS.has(action)
 }

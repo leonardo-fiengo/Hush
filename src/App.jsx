@@ -51,22 +51,7 @@ import {
 } from 'lucide-react'
 import ImportView from './components/ImportView.jsx'
 import { sampleEntries } from './data/sampleVault.js'
-import {
-  ARGON2_PARAMS,
-  changeMasterPassword,
-  createVault,
-  applyTransferredVault,
-  deleteStoredVault,
-  hasStoredVault,
-  installTransferredVault,
-  openVaultEnvelope,
-  persistVault,
-  readStoredVault,
-  recoverVault,
-  restoreVaultArchive,
-  unlockVault,
-  unlockVaultEnvelope,
-} from './lib/vaultCrypto.js'
+import * as defaultVaultApi from './lib/vaultCrypto.js'
 import { createDeviceLink } from './lib/deviceLink.js'
 import { safeHttpUrl } from './lib/importer.js'
 import {
@@ -86,6 +71,8 @@ import {
   deserializeEnvelope,
   serializeEnvelope,
 } from './lib/vaultTransfer.js'
+
+const { ARGON2_PARAMS } = defaultVaultApi
 
 const emptyEntry = {
   name: '',
@@ -1009,7 +996,22 @@ function LockScreen({ onUnlock, onRecover, onLogout, busy, notice }) {
   )
 }
 
-export default function App() {
+export default function App({ vaultApi = defaultVaultApi, runtime = 'web' }) {
+  const {
+    changeMasterPassword,
+    createVault,
+    applyTransferredVault,
+    deleteStoredVault,
+    hasStoredVault,
+    installTransferredVault,
+    openVaultEnvelope,
+    persistVault,
+    readStoredVault,
+    recoverVault,
+    restoreVaultArchive,
+    unlockVault,
+    unlockVaultEnvelope,
+  } = vaultApi
   const [status, setStatus] = useState('checking')
   const [entries, setEntries] = useState([])
   const [envelope, setEnvelope] = useState(null)
@@ -1049,17 +1051,45 @@ export default function App() {
   const linkRef = useRef(null)
   const statusRef = useRef(status)
   const pendingIncomingRef = useRef(null)
+  const lastSessionTouchRef = useRef(0)
 
   const encrypted = status === 'unlocked'
   statusRef.current = status
 
   useEffect(() => {
     let active = true
-    hasStoredVault().then((exists) => {
-      if (!active) return
-      if (exists) {
-        setStatus('locked')
-      } else {
+    void (async () => {
+      try {
+        const resumed = await vaultApi.resumeVault?.()
+        if (!active) return
+        if (resumed) {
+          const resumedItems = normalizePasswordDates(resumed.payload.items)
+          sessionRef.current += 1
+          dataKeyRef.current = resumed.dataKey
+          envelopeRef.current = resumed.envelope
+          entriesRef.current = resumedItems
+          committedEntriesRef.current = resumedItems
+          setEnvelope(resumed.envelope)
+          setEntries(resumedItems)
+          applyPreferences(resumed.payload.preferences)
+          setSelectedId(resumedItems[0]?.id || '')
+          setStatus('unlocked')
+          return
+        }
+        const exists = await hasStoredVault()
+        if (!active) return
+        if (exists) {
+          setStatus('locked')
+          return
+        }
+        const demoEntries = normalizePasswordDates(sampleEntries)
+        entriesRef.current = demoEntries
+        committedEntriesRef.current = demoEntries
+        setEntries(demoEntries)
+        setStatus('demo')
+        setOnboardingOpen(true)
+      } catch {
+        if (!active) return
         const demoEntries = normalizePasswordDates(sampleEntries)
         entriesRef.current = demoEntries
         committedEntriesRef.current = demoEntries
@@ -1067,17 +1097,9 @@ export default function App() {
         setStatus('demo')
         setOnboardingOpen(true)
       }
-    }).catch(() => {
-      if (!active) return
-      const demoEntries = normalizePasswordDates(sampleEntries)
-      entriesRef.current = demoEntries
-      committedEntriesRef.current = demoEntries
-      setEntries(demoEntries)
-      setStatus('demo')
-      setOnboardingOpen(true)
-    })
+    })()
     return () => { active = false }
-  }, [])
+  }, [vaultApi])
 
   useEffect(() => {
     function handleShortcut(event) {
@@ -1097,6 +1119,10 @@ export default function App() {
     let lastActiveAt = Date.now()
     const reset = () => {
       lastActiveAt = Date.now()
+      if (runtime === 'extension' && vaultApi.touchSession && Date.now() - lastSessionTouchRef.current >= 30_000) {
+        lastSessionTouchRef.current = Date.now()
+        void vaultApi.touchSession().catch(() => lockVault({ notifyBackend: false }))
+      }
       window.clearTimeout(timer)
       timer = window.setTimeout(() => lockVault(), autoLockMinutes * 60_000)
     }
@@ -1114,7 +1140,17 @@ export default function App() {
       document.removeEventListener('visibilitychange', checkWake)
       window.removeEventListener('focus', checkWake)
     }
-  }, [status, autoLockMinutes])
+  }, [status, autoLockMinutes, runtime, vaultApi])
+
+  useEffect(() => {
+    if (runtime !== 'extension' || status !== 'unlocked' || !vaultApi.status) return undefined
+    const poll = window.setInterval(() => {
+      void vaultApi.status()
+        .then((current) => { if (!current.unlocked) lockVault({ notifyBackend: false }) })
+        .catch(() => lockVault({ notifyBackend: false }))
+    }, 10_000)
+    return () => window.clearInterval(poll)
+  }, [runtime, status, vaultApi])
 
   useEffect(() => {
     if (!clipboardState?.id) return undefined
@@ -1319,11 +1355,12 @@ export default function App() {
     }
   }
 
-  function lockVault() {
+  function lockVault({ notifyBackend = true } = {}) {
     if (status === 'demo') {
       setOnboardingOpen(true)
       return
     }
+    if (notifyBackend) void vaultApi.lockVault?.().catch(() => {})
     const copiedValue = copiedValueRef.current
     copiedValueRef.current = ''
     setClipboardState(null)

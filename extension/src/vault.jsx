@@ -7,17 +7,12 @@ import '@fontsource/manrope/latin-700.css'
 import '@fontsource/newsreader/latin-500-italic.css'
 import '@fontsource/dm-mono/latin-400.css'
 import '@fontsource/dm-mono/latin-500.css'
-import HushRoot from './HushRoot.jsx'
-import './styles.css'
+import App from '../../src/App.jsx'
+import { extensionVaultApi } from '../../src/lib/extensionVaultApi.js'
+import '../../src/styles.css'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <HushRoot />
+    <App vaultApi={extensionVaultApi} runtime="extension" />
   </React.StrictMode>,
 )
-
-if (import.meta.env.PROD && 'serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {})
-  })
-}

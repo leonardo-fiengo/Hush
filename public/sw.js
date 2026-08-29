@@ -1,4 +1,4 @@
-const CACHE_NAME = 'hush-shell-v6'
+const CACHE_NAME = 'hush-shell-v7'
 const STATIC_SHELL = ['/manifest.webmanifest', '/hush-mark.png', '/hush-app-icon.svg']
 
 async function cacheResource(cache, resourceUrl) {

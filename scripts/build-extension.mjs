@@ -17,6 +17,7 @@ const entries = [
   ['content.js', 'content.js'],
   ['popup.js', 'popup.js'],
   ['options.js', 'options.js'],
+  ['vault.jsx', 'vault.js'],
 ]
 
 for (const [sourceName, outputName] of entries) {
@@ -27,10 +28,13 @@ for (const [sourceName, outputName] of entries) {
     format: 'iife',
     platform: 'browser',
     target: ['chrome120'],
+    jsx: 'automatic',
     minify: true,
     legalComments: 'none',
     sourcemap: false,
     charset: 'utf8',
+    assetNames: 'assets/[name]-[hash]',
+    loader: { '.woff': 'file', '.woff2': 'file' },
   })
 }
 
@@ -38,6 +42,8 @@ await Promise.all([
   cp(join(sourceRoot, 'manifest.json'), join(outputRoot, 'manifest.json')),
   cp(join(sourceRoot, 'popup.html'), join(outputRoot, 'popup.html')),
   cp(join(sourceRoot, 'options.html'), join(outputRoot, 'options.html')),
+  cp(join(sourceRoot, 'vault.html'), join(outputRoot, 'vault.html')),
   cp(join(sourceRoot, 'extension.css'), join(outputRoot, 'extension.css')),
+  cp(join(projectRoot, 'public', 'hush-mark.png'), join(outputRoot, 'hush-mark.png')),
   ...[16, 32, 48, 128].map((size) => cp(join(projectRoot, 'public', 'hush-mark.png'), join(outputRoot, 'icons', `hush-${size}.png`))),
 ])
