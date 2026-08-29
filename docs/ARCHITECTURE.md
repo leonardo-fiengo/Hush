@@ -67,22 +67,24 @@ After authentication, Hush places only the random DEK's base64 session material,
 Configured inactivity is enforced both on privileged operations and with `chrome.alarms`. User activity slides the deadline. Device lock clears the session immediately; normal worker suspension does not. Pending website captures deliberately remain worker-memory-only, so a worker restart discards an unconfirmed password update safely.
 
 ```text
-approved top-level page
+permitted HTTPS top-level page
       |
-content script: form signals + user click
+content script: form signals + focus/click intent
       |
 allow-listed message with no caller-supplied domain
       |
-service worker validates sender/tab/origin/frame
+service worker derives and validates sender/tab/origin/frame
       |
-exact hostname + port + scheme + PSL/IDN policy
+exact or labeled same-site PSL/IDN/scheme/port policy
       |
-one selected credential returned only for filling
+short-lived exact-page authorization + selected fill
 ```
 
-Site access is an optional host permission requested per site. No browsing-history permission is requested or collected. Content scripts receive neither the complete vault nor a general search API. Passwords are never placed in data attributes or hidden helper nodes.
+The manifest receives persistent `https://*/*` host access once at install so login suggestions work without per-site activation. It declares one top-frame content script, excludes the hosted Hush bridge origin, does not run on HTTP, and requests no browsing-history permission. Content scripts receive neither the complete vault nor a caller-directed domain search API. Passwords are never placed in data attributes or hidden helper nodes.
 
-Registration and password-change values remain pending in service-worker memory. The old credential remains untouched until a same-origin page asks the user to confirm success. Service-worker restart safely discards the pending operation.
+Focus automatically requests safe summaries. Manual fill remains available for exact and labeled same-registrable-domain matches. Optional automatic fill is encrypted in vault preferences and is limited to one exact, HTTPS, non-IDN, non-special-use match; registration, new-password, same-site, and ambiguous matches are never silently filled. The worker binds each suggestion response to a short-lived request ID and exact tab URL, then revalidates both before releasing only the selected credential.
+
+Registration and password-change values remain pending in service-worker memory. Generated passwords require a click, and the old credential remains untouched until a same-origin page asks the user to confirm success. Multi-step login state stores only a short-lived username or credential ID in worker memory and is cleared on timeout, unrelated navigation, lock, restart, or completion. Service-worker restart safely discards all unconfirmed operations.
 
 ## Password intelligence
 

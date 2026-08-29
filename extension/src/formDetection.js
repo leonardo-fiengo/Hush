@@ -26,7 +26,7 @@ export function classifyFormSignals({ fields = [], text = '', path = '' } = {}) 
   const currentFields = passwordFields.filter((field) => field.autocomplete === 'current-password' || /current|old/u.test(`${field.name} ${field.label}`))
   const newFields = passwordFields.filter((field) => field.autocomplete === 'new-password' || /new|confirm|repeat/u.test(`${field.name} ${field.label}`))
   const usernameFields = normalized.filter(isUsernameField)
-  const context = `${text} ${path}`
+  const context = `${text} ${path}`.replace(/[_-]+/gu, ' ')
 
   let kind = 'unknown'
   if (currentFields.length && newFields.length) kind = 'password-change'
@@ -56,4 +56,3 @@ export function inputDescriptor(input) {
     visible: input.type !== 'hidden' && !input.disabled && !input.readOnly,
   }
 }
-

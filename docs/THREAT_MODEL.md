@@ -15,7 +15,7 @@ Hush is designed to protect against:
 - common phishing hostnames, suffix tricks, ports, HTTP downgrade, and IDN/homograph risk;
 - XSS in the web vault through React escaping, a script-restrictive CSP, no remote runtime scripts, and no use of `innerHTML`;
 - forged, malformed, cross-frame, or unknown extension messages;
-- excessive extension access by making website permissions optional and per-site;
+- unintended page access by limiting persistent host permission and static injection to top-level HTTPS pages while excluding HTTP and the hosted Hush bridge origin;
 - dependency and release-chain compromise through exact dependency versions, a lockfile, audits, CI, CodeQL, Dependabot review, no remotely executed JavaScript, and official browser-store distribution guidance;
 - someone finding a device after it locks or after the browser profile restarts, because the memory-only extension session is cleared;
 - accidental plaintext leakage through logs, persistent storage, analytics, backups, generated-password handling, or silent clipboard use;
@@ -25,7 +25,7 @@ Hush is designed to protect against:
 
 If the user's operating system or browser is already fully compromised while Hush is unlocked, Hush cannot guarantee protection from malware reading memory, recording keystrokes, capturing the clipboard, observing filled form values, or modifying the browser or Hush code.
 
-This also means Hush cannot make a hostile login page safe. It can prevent a credential for one hostname from being offered to another, but the approved page receives the credential after the user deliberately fills it.
+This also means Hush cannot make a hostile login page safe. It can prevent a credential for one registrable website from being offered to another, but a matched page receives the credential after the user deliberately fills it or enables conservative single-exact-match autofill.
 
 ## Assets
 
@@ -49,7 +49,7 @@ When the extension is detected, the website becomes a status/open/migration surf
 
 The service worker is privileged and owns vault operations. Popup/options/full-manager pages are trusted packaged extension pages. `chrome.storage.session` holds only DEK session material plus identity and expiry metadata and is restricted to trusted extension contexts. Content scripts and every web page are less trusted. A content script cannot choose the domain being searched, request the full vault, export a vault, or invoke privileged extension-page actions.
 
-Only the top frame is supported. Cross-origin and nested frames are rejected rather than receiving credentials. The service worker derives the actual URL from the browser-provided sender, verifies sender ID, sender URL, sender origin, top-tab URL, and frame ID, then repeats the active-tab origin check immediately before filling.
+Only the top frame is supported. Cross-origin and nested frames are rejected rather than receiving credentials. The service worker derives the actual URL from the browser-provided sender and live tab, verifies sender ID, sender URL, sender origin, top-tab URL, and frame ID, binds returned summaries to a short-lived request ID and exact page URL, then repeats the live-tab check immediately before filling.
 
 ### Device linking
 
@@ -70,6 +70,8 @@ A `.hush` file contains ciphertext, KDF parameters, salts, nonces, wrapped DEK c
 - Lock on browser-profile restart, extension reload/update, manual request, configured Hush inactivity, device lock, or an elapsed sleep interval.
 - Clipboard writes occur only after a user click and are cleared on a configurable best-effort timer. Clipboard history software may retain values.
 - Credential updates are staged in extension memory and applied only after the user confirms that the website accepted the transaction.
+- Automatic fill is off by default and, when enabled, requires one exact HTTPS match; same-site, multiple-account, IDN, special-use, registration, and new-password cases remain interactive.
+- Same-site fallback uses parsed registrable domains with private-suffix awareness, never substring or raw suffix matching.
 - Previous passwords remain encrypted, have timestamps and bounded retention, and can be deleted manually.
 
 ## Residual risks
@@ -79,7 +81,7 @@ A `.hush` file contains ciphertext, KDF parameters, salts, nonces, wrapped DEK c
 - Password strength and guessed-entropy values are conservative estimates, not exact cracking-time predictions.
 - Clipboard clearing depends on browser permission and cannot erase third-party clipboard history.
 - WebRTC metadata can reveal IP/network information to peers and the STUN service.
-- A malicious or compromised approved website receives credentials the user chooses to fill.
+- A malicious or compromised matched website receives credentials the user chooses to fill, or a single exact-host credential when the user has explicitly enabled automatic fill.
 - Argon2id parameters suitable for the benchmark machine may need adjustment on low-memory mobile devices.
 - The code has automated tests but has not had an independent professional cryptographic review or penetration test.
 

@@ -74,13 +74,13 @@ The extension:
 - keeps only DEK session material and expiry metadata in in-memory `chrome.storage.session`, never the master password or plaintext vault;
 - survives normal Manifest V3 service-worker suspension without prompting again;
 - locks on manual request, configured Hush inactivity, device lock, extension reload/update, or browser-profile restart;
-- asks for optional access one website at a time and requests no browsing-history permission;
-- validates sender ID, sender URL/origin, top-frame ID, top-tab URL, and the live tab immediately before fill;
-- performs exact hostname and port matching with URL parsing and Public Suffix List/IDN awareness;
+- receives persistent HTTPS host access at install, runs a static top-frame content script on normal HTTPS pages, excludes the hosted Hush origin, and requests no browsing-history permission;
+- validates sender ID, sender URL/origin, top-frame ID, top-tab URL, a short-lived suggestion authorization, and the exact live tab URL immediately before fill;
+- keeps exact hostname and port matches strongest and allows manual, labeled same-registrable-domain suggestions through `tldts` private-suffix/IDN-aware parsing;
 - blocks HTTPS credentials on HTTP and refuses IDN filling by default;
-- fills only after a user clicks Hush and returns only the selected credential to the approved page;
+- automatically presents matching accounts on focus, supports an opt-in single exact-match autofill setting, and never silently chooses among multiple or same-site accounts;
 - detects normal, dynamic, React-style, login, registration, multi-step, and password-change fields, including open Shadow DOM;
-- stages captures and password changes in memory, preserving the old password until the user confirms success;
+- offers click-to-generate registration/change passwords, keeps multi-step identity context and captures in memory, and preserves the old password until the user confirms success;
 - contains no remotely loaded code or custom updater.
 
 The production web origin in `extension/manifest.json` must be verified before store publication. Configure the final browser-store ID as `VITE_HUSH_EXTENSION_ID` in the production web build. The extension can also bootstrap migration by opening the website with its own ID. Until the published ID is configured, use an authenticated `.hush` handoff.

@@ -20,17 +20,10 @@ function element(tag, options = {}, ...children) {
 }
 
 async function render() {
-  const [status, sites] = await Promise.all([message({ action: 'status' }), message({ action: 'list-sites' })])
+  const status = await message({ action: 'status' })
   app.replaceChildren()
   const notice = element('div', { className: 'status-note' })
-  const header = element('header', { className: 'options-header' }, element('span', { className: 'mark', text: 'H' }), element('div', {}, element('p', { className: 'eyebrow', text: 'HUSH EXTENSION' }), element('h1', { text: 'Permissions & locking' }), element('p', { className: 'copy', text: 'Hush does not request browsing history. Site access is optional, explicit, and removable here.' })))
-  const siteList = element('div', { className: 'site-list' })
-  if (!sites.origins?.length) siteList.append(element('p', { className: 'copy', text: 'No websites have persistent Hush access. Enable a site from the toolbar popup.' }))
-  for (const pattern of sites.origins || []) {
-    const remove = element('button', { className: 'secondary small', text: 'Remove', onclick: async () => { await message({ action: 'remove-site', pattern }); await render() } })
-    siteList.append(element('div', { className: 'site-row' }, element('code', { text: pattern }), remove))
-  }
-  const permissionsCard = element('section', { className: 'options-card' }, element('h2', { text: 'Approved websites' }), siteList)
+  const header = element('header', { className: 'options-header' }, element('span', { className: 'mark', text: 'H' }), element('div', {}, element('p', { className: 'eyebrow', text: 'HUSH EXTENSION' }), element('h1', { text: 'Autofill & locking' }), element('p', { className: 'copy', text: 'Hush runs on normal HTTPS pages, never HTTP, and does not request browsing-history access.' })))
   const settingsCard = element('section', { className: 'options-card' }, element('h2', { text: 'Unlocked-vault settings' }))
   if (!status.unlocked) settingsCard.append(element('p', { className: 'copy', text: 'Unlock the extension from its toolbar popup to change encrypted settings.' }))
   else {
@@ -40,15 +33,16 @@ async function render() {
     const history = element('select')
     for (const [value, label] of [[0, 'Off'], [3, '3 versions'], [5, '5 versions'], [10, '10 versions']]) history.append(element('option', { value, text: label }))
     history.value = String(status.preferences.passwordHistoryLimit)
+    const autofill = element('input', { type: 'checkbox' })
+    autofill.checked = status.preferences.autofillSingleExact === true
     const save = element('button', { className: 'primary', text: 'Encrypt & save settings', onclick: async () => {
-      const response = await message({ action: 'update-settings', settings: { autoLockMinutes: Number(autoLock.value), passwordHistoryLimit: Number(history.value) } })
+      const response = await message({ action: 'update-settings', settings: { autoLockMinutes: Number(autoLock.value), passwordHistoryLimit: Number(history.value), autofillSingleExact: autofill.checked } })
       notice.textContent = response.ok ? 'Settings encrypted and saved.' : response.error
     } })
-    settingsCard.append(element('label', { className: 'setting' }, element('span', { text: 'Lock after inactivity' }), autoLock), element('label', { className: 'setting' }, element('span', { text: 'Encrypted password history' }), history), save, notice)
+    settingsCard.append(element('label', { className: 'setting' }, element('span', { text: 'Lock after inactivity' }), autoLock), element('label', { className: 'setting' }, element('span', { text: 'Encrypted password history' }), history), element('label', { className: 'setting' }, element('span', {}, element('strong', { text: 'Autofill a single exact login match automatically' }), element('small', { text: 'Never selects among multiple accounts or fills same-site, IDN, registration, or new-password fields.' })), autofill), save, notice)
   }
-  const permissionExplanation = element('section', { className: 'options-card' }, element('h2', { text: 'Why these permissions?' }), element('dl', { className: 'permission-list' }, element('dt', { text: 'storage' }), element('dd', { text: 'Stores only the encrypted vault envelope.' }), element('dt', { text: 'scripting + activeTab' }), element('dd', { text: 'Adds Hush to a website only after you enable that site.' }), element('dt', { text: 'idle' }), element('dd', { text: 'Locks usable keys when the device becomes idle or locked.' })))
-  app.append(header, permissionsCard, settingsCard, permissionExplanation)
+  const permissionExplanation = element('section', { className: 'options-card' }, element('h2', { text: 'Why these permissions?' }), element('dl', { className: 'permission-list' }, element('dt', { text: 'https://*/*' }), element('dd', { text: 'Detects login forms and presents suggestions on HTTPS sites. Hush excludes its hosted web app and never runs on HTTP.' }), element('dt', { text: 'storage' }), element('dd', { text: 'Stores only the authenticated encrypted vault envelope and trusted session material.' }), element('dt', { text: 'idle' }), element('dd', { text: 'Locks usable keys when the device becomes locked.' })))
+  app.append(header, settingsCard, permissionExplanation)
 }
 
 void render()
-

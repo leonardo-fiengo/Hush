@@ -16,7 +16,7 @@ The static Hush web host serves HTML, CSS, fonts, images, and JavaScript. It has
 
 Direct device linking transfers the encrypted envelope over a peer-to-peer WebRTC data channel. Cloudflare's public STUN service may receive network metadata needed to discover a peer connection; it does not receive vault plaintext. No TURN relay is configured.
 
-The extension sends a selected username/password only to the exact approved top-level website after the user requests filling. It does not send the complete vault to a content script.
+The extension sends one selected username/password only to a safely matched top-level HTTPS page after the user clicks an account, or for one exact host when the user has enabled automatic exact-match filling. Same-site subdomain matches are labeled and remain click-to-fill. It does not send the complete vault to a content script.
 
 ## Browser permissions
 
@@ -25,10 +25,9 @@ The extension uses:
 - `storage` for the encrypted vault envelope and memory-only unlocked session;
 - `alarms` for the configured Hush inactivity deadline;
 - `idle` to lock usable keys when the device itself locks;
-- `activeTab` and `scripting` to add Hush after the user enables the current site;
-- optional per-site HTTPS host access granted by the user.
+- persistent `https://*/*` host access so one declared top-frame content script can detect forms and present suggestions without per-site activation.
 
-It does not request browsing history and does not collect browsing history. Approved sites can be removed from the extension settings page.
+It does not request browsing history, does not collect browsing history, never injects on HTTP, and excludes the hosted Hush web origin from content-script injection.
 
 ## Telemetry and third parties
 
@@ -42,7 +41,7 @@ Hush writes a value to the clipboard only after a user clicks Copy. It attempts 
 
 ## Retention and deletion
 
-Encrypted data remains on a device until the user removes the local vault, clears browser/extension storage, or uninstalls the extension. Password history retention is configurable and can be deleted from the vault. The unlocked extension session is removed on explicit lock, configured inactivity, device lock, extension reload/update, or browser-profile restart. Pending extension captures are memory-only, expire, and are discarded on lock or service-worker restart.
+Encrypted data remains on a device until the user removes the local vault, clears browser/extension storage, or uninstalls the extension. Password history retention is configurable and can be deleted from the vault. The unlocked extension session is removed on explicit lock, configured inactivity, device lock, extension reload/update, or browser-profile restart. Pending captures and short-lived multi-step login context are memory-only, expire, and are discarded on lock or service-worker restart.
 
 Hush has no account database, so there is currently no server-side account-deletion process. If accounts or synchronization are introduced, this policy must document retention, deletion, subprocessors, and data-subject request handling before launch.
 

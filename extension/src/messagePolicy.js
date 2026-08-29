@@ -6,6 +6,7 @@ export const CONTENT_ACTIONS = new Set([
   'page-ready',
   'save-pending',
   'discard-pending',
+  'stage-login-step',
 ])
 
 export const EXTENSION_ACTIONS = new Set([
@@ -28,9 +29,7 @@ export const EXTENSION_ACTIONS = new Set([
   'recover-vault',
   'delete-vault',
   'update-settings',
-  'register-site',
-  'list-sites',
-  'remove-site',
+  'page-summary',
 ])
 
 export const EXTERNAL_ACTIONS = new Set([
@@ -55,7 +54,7 @@ export function classifyMessageSender(sender, { extensionId, extensionOrigin }) 
     return { kind: 'invalid' }
   }
   if (senderUrl.protocol === expectedExtensionUrl.protocol && senderUrl.host === expectedExtensionUrl.host) return { kind: 'extension', url: senderUrl }
-  if (!sender.tab?.url || sender.frameId !== 0 || !['https:', 'http:'].includes(senderUrl.protocol)) return { kind: 'invalid' }
+  if (!sender.tab?.url || sender.frameId !== 0 || senderUrl.protocol !== 'https:') return { kind: 'invalid' }
   let tabUrl
   try {
     tabUrl = new URL(sender.tab.url)

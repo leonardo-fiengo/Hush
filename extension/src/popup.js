@@ -33,25 +33,12 @@ function errorNode(text) {
 
 async function currentSite() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  if (!tab?.url || new URL(tab.url).protocol !== 'https:') return null
-  const url = new URL(tab.url)
-  return { tab, url, pattern: `${url.protocol}//${url.hostname}/*` }
-}
-
-async function enableCurrentSite(button, status) {
-  const site = await currentSite()
-  if (!site) return
-  const granted = await chrome.permissions.request({ origins: [site.pattern] })
-  if (!granted) {
-    status.replaceChildren(errorNode('Site access was not granted.'))
-    return
-  }
-  const response = await message({ action: 'register-site', tabId: site.tab.id, url: site.tab.url })
-  if (!response.ok) status.replaceChildren(errorNode(response.error))
-  else {
-    button.disabled = true
-    button.textContent = `Enabled on ${site.url.hostname}`
-    status.textContent = 'Reloading is not required. Focus a login field to see the Hush button.'
+  if (!tab?.id || !tab.url) return null
+  try {
+    const url = new URL(tab.url)
+    return url.protocol === 'https:' ? { tab, url } : null
+  } catch {
+    return null
   }
 }
 
@@ -59,18 +46,9 @@ async function renderUnlocked(state) {
   app.replaceChildren()
   const status = element('div', { className: 'status-note' })
   const site = await currentSite()
-  let accessButton = null
-  if (site) {
-    const enabled = await chrome.permissions.contains({ origins: [site.pattern] })
-    accessButton = element('button', {
-      className: 'primary',
-      text: enabled ? `Enabled on ${site.url.hostname}` : `Enable on ${site.url.hostname}`,
-      onclick: () => { void enableCurrentSite(accessButton, status) },
-    })
-    accessButton.disabled = enabled
-  }
+  const summary = site ? await message({ action: 'page-summary', tabId: site.tab.id }) : null
   const openButton = element('button', { className: 'primary', text: 'Open Hush', onclick: () => chrome.tabs.create({ url: chrome.runtime.getURL('vault.html') }) })
-  const lockButton = element('button', { className: 'secondary', text: 'Lock now', onclick: async () => { await message({ action: 'lock' }); await render() } })
+  const lockButton = element('button', { className: 'secondary', text: 'Lock', onclick: async () => { await message({ action: 'lock' }); await render() } })
   const exportButton = element('button', { className: 'text-button', text: 'Download encrypted backup', onclick: async () => {
     const response = await message({ action: 'export-vault' })
     if (!response.ok) return status.replaceChildren(errorNode(response.error))
@@ -81,15 +59,19 @@ async function renderUnlocked(state) {
     link.click()
     URL.revokeObjectURL(url)
   } })
-  const settingsButton = element('button', { className: 'text-button', text: 'Permissions & settings', onclick: () => chrome.runtime.openOptionsPage() })
+  const settingsButton = element('button', { className: 'text-button', text: 'Autofill & security settings', onclick: () => chrome.runtime.openOptionsPage() })
+  const pageFacts = site ? element('div', { className: 'page-facts' },
+    element('span', {}, element('small', { text: 'THIS PAGE' }), element('strong', { text: site.url.hostname })),
+    element('span', {}, element('small', { text: 'MATCHING LOGINS' }), element('strong', { text: summary?.ok ? String(summary.matchCount) : '\u2014' })),
+  ) : null
   app.append(
     brand(),
     element('section', { className: 'card' },
       element('p', { className: 'eyebrow', text: 'VAULT UNLOCKED' }),
       element('h1', { text: `${state.itemCount} encrypted ${state.itemCount === 1 ? 'item' : 'items'}` }),
-      element('p', { className: 'copy', text: 'Hush fills only after you click its field button and only on an exact approved hostname.' }),
+      element('p', { className: 'copy', text: 'Hush automatically offers matching logins on HTTPS forms. The service worker verifies the live tab before every fill.' }),
+      pageFacts,
       openButton,
-      accessButton,
       lockButton,
       exportButton,
       settingsButton,
@@ -154,7 +136,7 @@ function renderLocked(state) {
   app.replaceChildren()
   const password = element('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Master password', autofocus: '' })
   const status = element('div', { className: 'status-note' })
-  const unlock = element('button', { className: 'primary', text: 'Unlock locally', onclick: async () => {
+  const unlock = element('button', { className: 'primary', text: 'Unlock', onclick: async () => {
     unlock.disabled = true
     const response = await message({ action: 'unlock', password: password.value })
     password.value = ''
@@ -164,7 +146,7 @@ function renderLocked(state) {
     } else await render()
   } })
   password.addEventListener('keydown', (event) => { if (event.key === 'Enter') unlock.click() })
-  app.append(brand(), element('section', { className: 'card' }, element('p', { className: 'eyebrow', text: state.externalArchiveWaiting ? 'ENCRYPTED VAULT WAITING' : 'VAULT SEALED' }), element('h1', { text: 'Welcome back.' }), element('p', { className: 'copy', text: 'The vault key stays in browser-session memory across normal worker sleep and is removed on lock, timeout, extension reload, or browser restart.' }), element('label', { className: 'field' }, element('span', { text: 'Master password' }), password), unlock, status))
+  app.append(brand(), element('section', { className: 'card' }, element('p', { className: 'eyebrow', text: state.externalArchiveWaiting ? 'ENCRYPTED VAULT WAITING' : 'VAULT SEALED' }), element('h1', { text: 'Hush is locked.' }), element('p', { className: 'copy', text: 'Unlock locally to show and fill website suggestions. The session key is removed on lock, timeout, extension reload, or browser restart.' }), element('label', { className: 'field' }, element('span', { text: 'Master password' }), password), unlock, status))
   password.focus()
 }
 

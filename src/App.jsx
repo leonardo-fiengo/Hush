@@ -145,13 +145,14 @@ function mutationErrorMessage(error, fallback) {
   return error?.message?.includes('changed in another tab') ? error.message : fallback
 }
 
-const DEFAULT_PREFERENCES = Object.freeze({ autoLockMinutes: 15, clipboardClearSeconds: 30, passwordHistoryLimit: 5 })
+const DEFAULT_PREFERENCES = Object.freeze({ autoLockMinutes: 15, clipboardClearSeconds: 30, passwordHistoryLimit: 5, autofillSingleExact: false })
 
 function normalizePreferences(preferences = {}) {
   const autoLockMinutes = [0, 5, 15, 30, 60].includes(Number(preferences.autoLockMinutes)) ? Number(preferences.autoLockMinutes) : DEFAULT_PREFERENCES.autoLockMinutes
   const clipboardClearSeconds = [15, 30, 60, 120].includes(Number(preferences.clipboardClearSeconds)) ? Number(preferences.clipboardClearSeconds) : DEFAULT_PREFERENCES.clipboardClearSeconds
   const passwordHistoryLimit = [0, 3, 5, 10].includes(Number(preferences.passwordHistoryLimit)) ? Number(preferences.passwordHistoryLimit) : DEFAULT_PREFERENCES.passwordHistoryLimit
-  return { autoLockMinutes, clipboardClearSeconds, passwordHistoryLimit }
+  const autofillSingleExact = preferences.autofillSingleExact === true
+  return { autoLockMinutes, clipboardClearSeconds, passwordHistoryLimit, autofillSingleExact }
 }
 
 function useDialogFocus(onClose) {
@@ -722,7 +723,7 @@ function InstallAppCard({ installed, canInstall, onInstall }) {
   )
 }
 
-function SettingsView({ encrypted, autoLockMinutes, setAutoLockMinutes, clipboardClearSeconds, setClipboardClearSeconds, passwordHistoryLimit, setPasswordHistoryLimit, onExport, onRestoreFile, onChangePassword, onLock, onProtect, onLogout, deviceLink, installApp }) {
+function SettingsView({ encrypted, autoLockMinutes, setAutoLockMinutes, clipboardClearSeconds, setClipboardClearSeconds, passwordHistoryLimit, setPasswordHistoryLimit, autofillSingleExact, setAutofillSingleExact, onExport, onRestoreFile, onChangePassword, onLock, onProtect, onLogout, deviceLink, installApp }) {
   return (
     <main className="settings-view page-enter">
       <header className="page-heading"><div><p className="eyebrow"><Settings size={14} /> Vault preferences</p><h1>Fewer switches.<br /><em>Better defaults.</em></h1><p className="heading-copy">Security choices should be understandable, not a maze of fine print.</p></div></header>
@@ -733,6 +734,7 @@ function SettingsView({ encrypted, autoLockMinutes, setAutoLockMinutes, clipboar
           <div className="settings-card-title"><span><LockKeyhole size={20} /></span><div><h2>Vault access</h2><p>Lock this vault, or remove its local copy to switch vaults.</p></div></div>
           <label className="setting-row"><span><strong>Lock after</strong><small>Mouse and keyboard activity reset the timer.</small></span><select value={autoLockMinutes} onChange={(event) => setAutoLockMinutes(Number(event.target.value))}><option value={5}>5 minutes</option><option value={15}>15 minutes</option><option value={30}>30 minutes</option><option value={60}>1 hour</option><option value={0}>Never</option></select></label>
           <label className="setting-row"><span><strong>Password history</strong><small>Previous values remain inside the encrypted vault.</small></span><select value={passwordHistoryLimit} onChange={(event) => setPasswordHistoryLimit(Number(event.target.value))}><option value={0}>Off</option><option value={3}>3 versions</option><option value={5}>5 versions</option><option value={10}>10 versions</option></select></label>
+          <label className="setting-row"><span><strong>Automatic exact-match fill</strong><small>Fills only one unambiguous exact HTTPS login; suggestions remain available in every other case.</small></span><select value={autofillSingleExact ? 'on' : 'off'} onChange={(event) => setAutofillSingleExact(event.target.value === 'on')}><option value="off">Off</option><option value="on">On</option></select></label>
           <button className="settings-action" type="button" onClick={encrypted ? onLock : onProtect}><Lock size={16} /> {encrypted ? 'Lock right now' : 'Create a protected vault'}<ArrowRight size={16} /></button>
           {encrypted && <button className="settings-action" type="button" onClick={onChangePassword}><KeyRound size={16} /> Change master password<ChevronRight size={16} /></button>}
           {encrypted && <button className="settings-action logout-action" type="button" onClick={onLogout}><LogOut size={16} /> Log out on this device<ChevronRight size={16} /></button>}
@@ -1030,6 +1032,7 @@ export default function App({ vaultApi = defaultVaultApi, runtime = 'web' }) {
   const [autoLockMinutes, setAutoLockMinutes] = useState(15)
   const [clipboardClearSeconds, setClipboardClearSeconds] = useState(30)
   const [passwordHistoryLimit, setPasswordHistoryLimit] = useState(5)
+  const [autofillSingleExact, setAutofillSingleExact] = useState(false)
   const [recoveryKeyDisplay, setRecoveryKeyDisplay] = useState('')
   const [changePasswordOpen, setChangePasswordOpen] = useState(false)
   const [recoverOpen, setRecoverOpen] = useState(false)
@@ -1216,11 +1219,12 @@ export default function App({ vaultApi = defaultVaultApi, runtime = 'web' }) {
     setAutoLockMinutes(normalized.autoLockMinutes)
     setClipboardClearSeconds(normalized.clipboardClearSeconds)
     setPasswordHistoryLimit(normalized.passwordHistoryLimit)
+    setAutofillSingleExact(normalized.autofillSingleExact)
     return normalized
   }
 
   function currentPreferences(overrides = {}) {
-    return normalizePreferences({ autoLockMinutes, clipboardClearSeconds, passwordHistoryLimit, ...overrides })
+    return normalizePreferences({ autoLockMinutes, clipboardClearSeconds, passwordHistoryLimit, autofillSingleExact, ...overrides })
   }
 
   async function handleIncomingEnvelope(incoming) {
@@ -1413,6 +1417,7 @@ export default function App({ vaultApi = defaultVaultApi, runtime = 'web' }) {
       setAutoLockMinutes(DEFAULT_PREFERENCES.autoLockMinutes)
       setClipboardClearSeconds(DEFAULT_PREFERENCES.clipboardClearSeconds)
       setPasswordHistoryLimit(DEFAULT_PREFERENCES.passwordHistoryLimit)
+      setAutofillSingleExact(DEFAULT_PREFERENCES.autofillSingleExact)
       setLogoutOpen(false)
       setStatus('demo')
       setOnboardingOpen(true)
@@ -1505,6 +1510,20 @@ export default function App({ vaultApi = defaultVaultApi, runtime = 'web' }) {
     } catch (error) {
       entriesRef.current = previousEntries
       setPasswordHistoryLimit(previous)
+      showToast(mutationErrorMessage(error, 'Could not save that preference'), 'error')
+    }
+  }
+
+  async function changeAutofillSingleExact(enabled) {
+    const previous = autofillSingleExact
+    setAutofillSingleExact(enabled)
+    if (!encrypted) return
+    try {
+      const applied = await queueEncryptedSnapshot(entriesRef.current, currentPreferences({ autofillSingleExact: enabled }))
+      if (!applied) return
+      showToast('Autofill preference encrypted & saved')
+    } catch (error) {
+      setAutofillSingleExact(previous)
       showToast(mutationErrorMessage(error, 'Could not save that preference'), 'error')
     }
   }
@@ -1703,7 +1722,7 @@ export default function App({ vaultApi = defaultVaultApi, runtime = 'web' }) {
         {view === 'vault' && <VaultView entries={entries} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} selectedId={selectedId} setSelectedId={setSelectedId} searchRef={searchRef} onAdd={() => openEditor()} onEdit={(entry, quick) => quick ? quickUpdate(entry) : openEditor(entry)} onDelete={setDeleteTarget} onClearHistory={clearPasswordHistory} onCopy={copyValue} onUse={markEntryUsed} clipboardState={clipboardState} encrypted={encrypted} linkState={linkState} onSecurity={() => setView('security')} onHelp={() => showToast('Tip: press Ctrl or ⌘ + K to jump to search')} />}
         {view === 'security' && <SecurityView entries={entries} onBackToVault={(id) => { setSelectedId(id); setFilter('risk'); setView('vault') }} />}
         {view === 'import' && <ImportView entries={entries} onImport={importEntries} onDone={() => { setFilter('all'); setView('vault') }} encrypted={encrypted} />}
-        {view === 'settings' && <SettingsView encrypted={encrypted} autoLockMinutes={autoLockMinutes} setAutoLockMinutes={changeAutoLockMinutes} clipboardClearSeconds={clipboardClearSeconds} setClipboardClearSeconds={changeClipboardClearSeconds} passwordHistoryLimit={passwordHistoryLimit} setPasswordHistoryLimit={changePasswordHistoryLimit} onExport={exportArchive} onRestoreFile={chooseRestoreFile} onChangePassword={() => setChangePasswordOpen(true)} onLock={lockVault} onProtect={() => setOnboardingOpen(true)} onLogout={() => setLogoutOpen(true)} deviceLink={{ linkState, peerName, onCreateOffer: () => linkRef.current.createOffer(), onAcceptOffer: (code) => linkRef.current.acceptOffer(code), onAcceptAnswer: (code) => linkRef.current.acceptAnswer(code), onDisconnect: () => linkRef.current?.close() }} installApp={{ installed: appInstalled, canInstall: Boolean(installPrompt), onInstall: installCurrentApp }} />}
+        {view === 'settings' && <SettingsView encrypted={encrypted} autoLockMinutes={autoLockMinutes} setAutoLockMinutes={changeAutoLockMinutes} clipboardClearSeconds={clipboardClearSeconds} setClipboardClearSeconds={changeClipboardClearSeconds} passwordHistoryLimit={passwordHistoryLimit} setPasswordHistoryLimit={changePasswordHistoryLimit} autofillSingleExact={autofillSingleExact} setAutofillSingleExact={changeAutofillSingleExact} onExport={exportArchive} onRestoreFile={chooseRestoreFile} onChangePassword={() => setChangePasswordOpen(true)} onLock={lockVault} onProtect={() => setOnboardingOpen(true)} onLogout={() => setLogoutOpen(true)} deviceLink={{ linkState, peerName, onCreateOffer: () => linkRef.current.createOffer(), onAcceptOffer: (code) => linkRef.current.acceptOffer(code), onAcceptAnswer: (code) => linkRef.current.acceptAnswer(code), onDisconnect: () => linkRef.current?.close() }} installApp={{ installed: appInstalled, canInstall: Boolean(installPrompt), onInstall: installCurrentApp }} />}
       </div>
       <nav className="mobile-nav" aria-label="Mobile navigation">
         {navItems.slice(0, 2).map(({ id, label, icon: Icon }) => <button type="button" aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} key={id} onClick={() => setView(id)}><Icon size={19} /><span>{label}</span></button>)}

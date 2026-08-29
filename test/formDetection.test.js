@@ -7,6 +7,7 @@ test('classifies login, registration, password change, and multi-step forms', ()
   assert.equal(classifyFormSignals({ text: 'Create account', fields: [{ type: 'email' }, { type: 'password', autocomplete: 'new-password' }, { type: 'password', autocomplete: 'new-password' }] }).kind, 'registration')
   assert.equal(classifyFormSignals({ text: 'Update password', fields: [{ type: 'password', autocomplete: 'current-password' }, { type: 'password', autocomplete: 'new-password' }] }).kind, 'password-change')
   assert.equal(classifyFormSignals({ fields: [{ type: 'email', autocomplete: 'username' }] }).kind, 'username-step')
+  assert.equal(classifyFormSignals({ path: '/account/change-password', fields: [{ type: 'password' }, { type: 'password' }] }).kind, 'password-change')
 })
 
 test('ignores hidden and disabled credential fields', () => {
@@ -14,4 +15,3 @@ test('ignores hidden and disabled credential fields', () => {
   assert.equal(result.kind, 'unknown')
   assert.equal(result.passwordCount, 0)
 })
-

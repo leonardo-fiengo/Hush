@@ -13,7 +13,7 @@ Until the first audited public release, only the latest commit on `main` is main
 - Vault: authenticated, versioned, client-side encrypted envelope.
 - Server: static assets only; no ability to decrypt a vault.
 - Password generation: CSPRNG with rejection sampling; no `Math.random()`.
-- Extension: Manifest V3, optional per-site permissions, top-frame sender validation, exact hostname/port matching, user-triggered fill.
+- Extension: Manifest V3, persistent HTTPS-only top-frame activation, live-tab and exact-page authorization, parsed exact/same-site matching, click-to-fill suggestions, and opt-in single exact-match autofill.
 
 See [the threat model](docs/THREAT_MODEL.md) and [architecture](docs/ARCHITECTURE.md) for details and limitations.
 
@@ -30,4 +30,3 @@ The project will acknowledge a report, reproduce it, coordinate a fix and disclo
 High-priority areas include vault format/KDF/key lifecycle, backup/recovery, IndexedDB and extension storage, extension permissions/message validation/domain matching/autofill, CSP/XSS, device linking, import parsing, dependencies, and the build/release chain.
 
 Testing must use synthetic credentials and domains. Do not test third-party sites without authorization.
-

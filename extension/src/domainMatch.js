@@ -26,6 +26,8 @@ function parseWebUrl(value) {
     registrableDomain: domain.domain,
     publicSuffix: domain.publicSuffix,
     isIp: Boolean(domain.isIp),
+    isIcann: Boolean(domain.isIcann),
+    isPrivateSuffix: Boolean(domain.isPrivate),
     isIdn: url.hostname.split('.').some((label) => label.startsWith('xn--')),
     isSpecialUse: Boolean(domain.isSpecialUse),
   }
@@ -64,21 +66,53 @@ export function matchCredentialToPage(entry, pageUrl) {
 
   const exactHost = saved.host === page.host
   const explicitlyRelated = normalizedAllowedHosts(entry).includes(page.host)
-  if (!exactHost && !explicitlyRelated) return { match: false, reason: 'The exact saved hostname and port do not match this page.' }
-  if (saved.protocol === 'https:' && page.protocol !== 'https:') {
+  const sameSite = !exactHost
+    && !explicitlyRelated
+    && saved.hostname !== page.hostname
+    && !saved.port
+    && !page.port
+    && saved.protocol === 'https:'
+    && page.protocol === 'https:'
+    && !saved.isIp
+    && !page.isIp
+    && !(saved.isSpecialUse && !saved.isIcann)
+    && !(page.isSpecialUse && !page.isIcann)
+    && !saved.isIdn
+    && !page.isIdn
+    && Boolean(saved.registrableDomain)
+    && saved.registrableDomain === page.registrableDomain
+  const matchType = exactHost ? 'exact' : explicitlyRelated ? 'allowed-host' : sameSite ? 'same-site' : ''
+  if (!matchType) return { match: false, reason: 'The saved website is not safely related to this hostname and port.' }
+  if (page.protocol !== 'https:') {
     return {
       match: true,
       fillable: false,
-      reason: 'The saved HTTPS credential will not be filled into an unencrypted HTTP page.',
+      matchType,
+      autoFillSafe: false,
+      requiresConfirmation: true,
+      reason: saved.protocol === 'https:'
+        ? 'The saved HTTPS credential will not be filled into an unencrypted HTTP page.'
+        : 'Hush does not fill credentials into unencrypted HTTP pages.',
       page,
       saved,
     }
   }
+  const unusualPort = Boolean(saved.port || page.port)
+  const protocolUpgrade = saved.protocol !== page.protocol
+  const suspiciousExactHost = saved.isIp || page.isIp || (saved.isSpecialUse && !saved.isIcann) || (page.isSpecialUse && !page.isIcann) || unusualPort
+  const requiresConfirmation = page.isIdn || matchType !== 'exact' || suspiciousExactHost || protocolUpgrade
+  let reason = 'Exact hostname and port match.'
+  if (matchType === 'same-site') reason = `Same registrable website (${page.registrableDomain}); confirm this subdomain before filling.`
+  else if (matchType === 'allowed-host') reason = 'This hostname was explicitly approved for the saved credential.'
+  else if (suspiciousExactHost) reason = 'Exact hostname match on an unusual port, IP address, or special-use host; verify it before filling.'
+  else if (protocolUpgrade) reason = 'The saved HTTP login matches this HTTPS hostname; verify it before filling.'
   return {
     match: true,
     fillable: page.protocol === 'https:' && !page.isIdn,
-    requiresConfirmation: page.protocol !== 'https:' || page.isIdn || explicitlyRelated,
-    reason: explicitlyRelated ? 'This hostname was explicitly approved for the saved credential.' : 'Exact hostname and port match.',
+    matchType,
+    autoFillSafe: matchType === 'exact' && saved.protocol === 'https:' && page.protocol === 'https:' && !page.isIdn && !suspiciousExactHost,
+    requiresConfirmation,
+    reason,
     page,
     saved,
   }
@@ -90,4 +124,3 @@ export function credentialsForPage(entries, pageUrl) {
     return result.match ? [{ entry, match: result }] : []
   })
 }
-

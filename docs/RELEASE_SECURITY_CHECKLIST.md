@@ -30,7 +30,7 @@ Repository controls are implemented where code can enforce them. The account/sto
 
 ## Browser extension release
 
-- [x] Manifest V3 and least-privilege optional per-site access.
+- [x] Manifest V3 with persistent HTTPS-only access, hosted-origin exclusion, no HTTP injection, and no browsing-history permission.
 - [x] No custom updater or downloaded executable code.
 - [x] Extension CSP allows local code and the bundled Argon2 WebAssembly only.
 - [x] Web CSP grants `wasm-unsafe-eval` for bundled Argon2id without granting general `unsafe-eval`.

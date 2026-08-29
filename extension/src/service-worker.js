@@ -12,6 +12,7 @@ import {
 import { generatePassword } from '../../src/lib/passwordGenerator.js'
 import { masterPasswordHealth } from '../../src/lib/passwordRisk.js'
 import { deserializeEnvelope, serializeEnvelope } from '../../src/lib/vaultTransfer.js'
+import { automaticMatch, normalizeFormRequest } from './autofillPolicy.js'
 import { credentialsForPage } from './domainMatch.js'
 import { actionAllowed, classifyMessageSender, externalActionAllowed } from './messagePolicy.js'
 import {
@@ -31,8 +32,12 @@ const HUSH_WEB_ORIGINS = new Set(['https://hush-password-manager.vercel.app'])
 const MAX_ARCHIVE_CHARACTERS = 50_000_000
 const MAX_STAGED_ARCHIVE_CHARACTERS = 4_000_000
 const MAX_SECRET_LENGTH = 4096
+const FILL_AUTHORIZATION_TTL = 2 * 60_000
+const MULTI_STEP_TTL = 5 * 60_000
 
 const pendingCaptures = new Map()
+const fillAuthorizations = new Map()
+const multiStepContexts = new Map()
 
 const storageReady = Promise.all([
   chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
@@ -64,6 +69,8 @@ async function clearSession() {
   await chrome.storage.session.remove([SESSION_KEY, PENDING_AUTH_KEY])
   await chrome.alarms.clear(AUTO_LOCK_ALARM)
   pendingCaptures.clear()
+  fillAuthorizations.clear()
+  multiStepContexts.clear()
 }
 
 function sessionPreferences(active) {
@@ -71,6 +78,7 @@ function sessionPreferences(active) {
     autoLockMinutes: normalizeAutoLockMinutes(active?.payload?.preferences?.autoLockMinutes),
     clipboardClearSeconds: Number(active?.payload?.preferences?.clipboardClearSeconds ?? 30),
     passwordHistoryLimit: Number(active?.payload?.preferences?.passwordHistoryLimit ?? 5),
+    autofillSingleExact: active?.payload?.preferences?.autofillSingleExact === true,
   }
 }
 
@@ -192,83 +200,215 @@ async function consumeAuthenticatedEnvelope(envelope) {
   return pending.sessionKeyMaterial
 }
 
-function credentialSummary(entry, match) {
+function credentialSummary(entry, match, multiStep) {
   return {
     id: entry.id,
     name: safeText(entry.name, 160),
     username: safeText(entry.username, 512),
     hostname: match.page.hostname,
     fillable: Boolean(match.fillable),
+    matchType: match.matchType || '',
+    preferred: Boolean(multiStep && (
+      multiStep.credentialId === entry.id
+      || (!multiStep.credentialId && multiStep.username && multiStep.username === entry.username)
+    )),
     warning: match.fillable ? (match.requiresConfirmation ? match.reason : '') : match.reason,
   }
 }
 
-function matchesForSender(active, context) {
-  return credentialsForPage(active.payload.items || [], context.url.href)
+function matchesForPage(active, pageUrl) {
+  return credentialsForPage(active.payload.items || [], pageUrl)
+}
+
+async function trustedCurrentPage(context, reportedPageUrl = '') {
+  const currentTab = await chrome.tabs.get(context.tabId)
+  if (!currentTab?.url) throw new Error('Hush could not verify the current page.')
+  let current
+  try {
+    current = new URL(currentTab.url)
+  } catch {
+    throw new Error('Hush could not verify the current page.')
+  }
+  if (current.protocol !== 'https:' || current.origin !== context.url.origin) throw new Error('The page changed before Hush could continue.')
+  if (reportedPageUrl) {
+    let reported
+    try {
+      reported = new URL(String(reportedPageUrl).slice(0, 4096))
+    } catch {
+      throw new Error('Hush received an invalid page context.')
+    }
+    if (reported.origin !== context.url.origin || reported.href !== current.href) throw new Error('The page changed before Hush could continue.')
+  }
+  return current
+}
+
+function currentMultiStepContext(tabId, origin) {
+  const value = multiStepContexts.get(tabId)
+  if (!value) return null
+  if (value.origin !== origin || Date.now() - value.createdAt > MULTI_STEP_TTL) {
+    multiStepContexts.delete(tabId)
+    return null
+  }
+  return value
+}
+
+function authorizeMatches(tabId, page, matches) {
+  const now = Date.now()
+  for (const [id, authorization] of fillAuthorizations) {
+    if (now - authorization.createdAt > FILL_AUTHORIZATION_TTL) fillAuthorizations.delete(id)
+  }
+  const requestId = crypto.randomUUID()
+  fillAuthorizations.set(requestId, {
+    tabId,
+    requestId,
+    pageUrl: page.href,
+    origin: page.origin,
+    credentialIds: matches.map(({ entry }) => entry.id),
+    createdAt: Date.now(),
+  })
+  return requestId
+}
+
+function clearFillAuthorizationsForTab(tabId) {
+  for (const [requestId, authorization] of fillAuthorizations) {
+    if (authorization.tabId === tabId) fillAuthorizations.delete(requestId)
+  }
+}
+
+async function sendCredentialToPage(context, page, candidate, mode) {
+  const verifiedPage = await trustedCurrentPage(context, page.href)
+  const credential = { mode, expectedPageUrl: verifiedPage.href }
+  if (mode === 'username-step' || mode === 'login') credential.username = candidate.entry.username || ''
+  if (mode !== 'username-step') credential.password = candidate.entry.password
+  const response = await chrome.tabs.sendMessage(context.tabId, { action: 'perform-fill', credential }, { frameId: 0 })
+  if (!response?.ok) throw new Error('The login fields changed before Hush could fill them.')
 }
 
 async function handleContentMessage(message, context) {
   if (!actionAllowed('content', message.action)) throw new Error('Unknown or disallowed content-script action.')
   if (message.action === 'request-credentials') {
     const active = await unlockedSession()
-    return { ok: true, credentials: matchesForSender(active, context).map(({ entry, match }) => credentialSummary(entry, match)) }
+    const page = await trustedCurrentPage(context, message.pageUrl)
+    const matches = matchesForPage(active, page.href)
+    const multiStep = currentMultiStepContext(context.tabId, page.origin)
+    const requestId = authorizeMatches(context.tabId, page, matches)
+    const formRequest = normalizeFormRequest(message.form)
+    const automatic = automaticMatch(matches, sessionPreferences(active), formRequest, multiStep)
+    if (automatic) {
+      const mode = formRequest.formKind === 'password-change' ? 'current-password' : 'login'
+      await sendCredentialToPage(context, page, automatic, mode)
+      fillAuthorizations.delete(requestId)
+      if (automatic.reason === 'multi-step-selection') multiStepContexts.delete(context.tabId)
+    }
+    return {
+      ok: true,
+      requestId,
+      autofilled: Boolean(automatic),
+      credentials: matches.map(({ entry, match }) => credentialSummary(entry, match, multiStep)),
+    }
   }
   if (message.action === 'fill-credential') {
     const active = await unlockedSession()
+    const page = await trustedCurrentPage(context, message.pageUrl)
     if (typeof message.credentialId !== 'string' || message.credentialId.length > 200) throw new Error('Invalid credential selection.')
-    const candidate = matchesForSender(active, context).find(({ entry }) => entry.id === message.credentialId)
-    if (!candidate || !candidate.match.fillable) throw new Error(candidate?.match.reason || 'That credential does not exactly match this page.')
-    const currentTab = await chrome.tabs.get(context.tabId)
-    if (!currentTab?.url || new URL(currentTab.url).origin !== context.url.origin) throw new Error('The page changed before Hush could fill it.')
-    await chrome.tabs.sendMessage(context.tabId, {
-      action: 'perform-fill',
-      credential: {
-        username: candidate.entry.username || '',
-        password: candidate.entry.password,
-      },
-    }, { frameId: 0 })
+    const authorization = fillAuthorizations.get(message.requestId)
+    if (!authorization
+      || authorization.tabId !== context.tabId
+      || authorization.requestId !== message.requestId
+      || authorization.origin !== page.origin
+      || authorization.pageUrl !== page.href
+      || Date.now() - authorization.createdAt > FILL_AUTHORIZATION_TTL
+      || !authorization.credentialIds.includes(message.credentialId)) {
+      throw new Error('That Hush suggestion expired after the page changed. Focus the field again.')
+    }
+    const candidate = matchesForPage(active, page.href).find(({ entry }) => entry.id === message.credentialId)
+    if (!candidate || !candidate.match.fillable) throw new Error(candidate?.match.reason || 'That credential is not safe to fill on this page.')
+    const formRequest = normalizeFormRequest(message.form)
+    const mode = formRequest.formKind === 'username-step'
+      ? 'username-step'
+      : formRequest.formKind === 'password-change'
+        ? 'current-password'
+        : 'login'
+    await sendCredentialToPage(context, page, candidate, mode)
+    fillAuthorizations.delete(message.requestId)
+    if (mode === 'username-step') {
+      multiStepContexts.set(context.tabId, {
+        origin: page.origin,
+        credentialId: candidate.entry.id,
+        username: safeText(candidate.entry.username, 512),
+        explicitSelection: true,
+        createdAt: Date.now(),
+      })
+    } else {
+      multiStepContexts.delete(context.tabId)
+    }
     return { ok: true }
   }
   if (message.action === 'generate-password') {
     await unlockedSession()
+    await trustedCurrentPage(context, message.pageUrl)
     return { ok: true, password: generatePassword() }
+  }
+  if (message.action === 'stage-login-step') {
+    const active = await unlockedSession()
+    const page = await trustedCurrentPage(context, message.pageUrl)
+    const username = safeText(message.username, 512)
+    if (!username) return { ok: true, staged: false }
+    const usernameMatches = matchesForPage(active, page.href).filter(({ entry }) => entry.username === username)
+    multiStepContexts.set(context.tabId, {
+      origin: page.origin,
+      credentialId: usernameMatches.length === 1 ? usernameMatches[0].entry.id : '',
+      username,
+      explicitSelection: false,
+      createdAt: Date.now(),
+    })
+    return { ok: true, staged: true }
   }
   if (message.action === 'stage-credential') {
     const active = await unlockedSession()
+    const page = await trustedCurrentPage(context, message.pageUrl)
     const capture = message.capture
     if (!capture || !['login', 'registration', 'password-change'].includes(capture.kind)) throw new Error('Unsupported credential capture.')
     const username = safeText(capture.username, 512)
     const password = safeSecret(capture.password)
     const currentPassword = safeSecret(capture.currentPassword)
     if (!password) throw new Error('No password was captured.')
-    const matches = matchesForSender(active, context)
+    const matches = matchesForPage(active, page.href)
     const existing = matches.find(({ entry }) => capture.kind === 'password-change'
       ? (currentPassword && entry.password === currentPassword) || (username && entry.username === username)
       : username && entry.username === username)
     pendingCaptures.set(context.tabId, {
       kind: capture.kind,
-      origin: context.url.origin,
-      hostname: context.url.hostname,
+      origin: page.origin,
+      hostname: page.hostname,
       username,
       password,
       credentialId: existing?.entry.id || '',
       createdAt: Date.now(),
     })
+    multiStepContexts.delete(context.tabId)
+    clearFillAuthorizationsForTab(context.tabId)
     return { ok: true, staged: true }
   }
   if (message.action === 'page-ready') {
+    const page = await trustedCurrentPage(context, message.pageUrl)
     const pending = pendingCaptures.get(context.tabId)
-    if (!pending || pending.origin !== context.url.origin || Date.now() - pending.createdAt > 10 * 60_000) return { ok: true, pending: null }
+    if (!pending || pending.origin !== page.origin || Date.now() - pending.createdAt > 10 * 60_000) {
+      if (pending) pendingCaptures.delete(context.tabId)
+      return { ok: true, pending: null }
+    }
     return { ok: true, pending: { kind: pending.kind, hostname: pending.hostname, username: pending.username } }
   }
   if (message.action === 'discard-pending') {
     pendingCaptures.delete(context.tabId)
+    multiStepContexts.delete(context.tabId)
     return { ok: true }
   }
   if (message.action === 'save-pending') {
     const active = await unlockedSession()
+    const page = await trustedCurrentPage(context, message.pageUrl)
     const pending = pendingCaptures.get(context.tabId)
-    if (!pending || pending.origin !== context.url.origin || Date.now() - pending.createdAt > 10 * 60_000) throw new Error('That pending credential expired.')
+    if (!pending || pending.origin !== page.origin || Date.now() - pending.createdAt > 10 * 60_000) throw new Error('That pending credential expired.')
     const now = new Date().toISOString()
     const historyLimit = sessionPreferences(active).passwordHistoryLimit
     let items
@@ -317,32 +457,10 @@ async function handleContentMessage(message, context) {
     }
     await replaceSessionEnvelope({ ...active.payload, items })
     pendingCaptures.delete(context.tabId)
+    multiStepContexts.delete(context.tabId)
     return { ok: true }
   }
   throw new Error('Unknown content-script action.')
-}
-
-function sitePattern(urlValue) {
-  const url = new URL(urlValue)
-  if (!['https:', 'http:'].includes(url.protocol)) throw new Error('Hush can only run on normal web pages.')
-  return `${url.protocol}//${url.hostname}/*`
-}
-
-function scriptIdForPattern(pattern) {
-  return `hush_${pattern.replace(/[^a-z0-9]/giu, '_').slice(0, 200)}`
-}
-
-async function registerPattern(pattern) {
-  const id = scriptIdForPattern(pattern)
-  const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [id] })
-  if (!existing.length) await chrome.scripting.registerContentScripts([{
-    id,
-    matches: [pattern],
-    js: ['content.js'],
-    runAt: 'document_idle',
-    allFrames: false,
-    persistAcrossSessions: true,
-  }])
 }
 
 async function handleExtensionMessage(message) {
@@ -391,7 +509,7 @@ async function handleExtensionMessage(message) {
     const payload = message.payload ? validatePayload(message.payload) : {
       schemaVersion: 2,
       items: [],
-      preferences: { autoLockMinutes: 15, clipboardClearSeconds: 30, passwordHistoryLimit: 5 },
+      preferences: { autoLockMinutes: 15, clipboardClearSeconds: 30, passwordHistoryLimit: 5, autofillSingleExact: false },
     }
     const created = await createVaultEnvelope(password, payload, { includeSessionKeyMaterial: true })
     await storeEnvelope(created.envelope)
@@ -501,30 +619,25 @@ async function handleExtensionMessage(message) {
       if (![0, 3, 5, 10].includes(value)) throw new Error('Invalid history setting.')
       preferences.passwordHistoryLimit = value
     }
+    if (message.settings?.autofillSingleExact !== undefined) {
+      if (typeof message.settings.autofillSingleExact !== 'boolean') throw new Error('Invalid autofill setting.')
+      preferences.autofillSingleExact = message.settings.autofillSingleExact
+    }
     await replaceSessionEnvelope({ ...active.payload, preferences })
     return { ok: true, preferences }
   }
-  if (message.action === 'register-site') {
+  if (message.action === 'page-summary') {
     const tab = await chrome.tabs.get(Number(message.tabId))
-    if (!tab?.id || !tab.url || new URL(tab.url).origin !== new URL(message.url).origin) throw new Error('The active site changed before Hush could be enabled.')
-    const pattern = sitePattern(tab.url)
-    const allowed = await chrome.permissions.contains({ origins: [pattern] })
-    if (!allowed) throw new Error('Site access was not granted.')
-    await registerPattern(pattern)
-    await chrome.scripting.executeScript({ target: { tabId: tab.id, frameIds: [0] }, files: ['content.js'] })
-    return { ok: true, pattern }
-  }
-  if (message.action === 'list-sites') {
-    const permissions = await chrome.permissions.getAll()
-    return { ok: true, origins: (permissions.origins || []).sort() }
-  }
-  if (message.action === 'remove-site') {
-    const pattern = safeText(message.pattern, 500)
-    const removed = await chrome.permissions.remove({ origins: [pattern] })
-    const id = scriptIdForPattern(pattern)
-    const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [id] })
-    if (existing.length) await chrome.scripting.unregisterContentScripts({ ids: [id] })
-    return { ok: true, removed }
+    if (!tab?.id || !tab.url) return { ok: true, hostname: '', matchCount: 0 }
+    let page
+    try {
+      page = new URL(tab.url)
+    } catch {
+      return { ok: true, hostname: '', matchCount: 0 }
+    }
+    if (page.protocol !== 'https:') return { ok: true, hostname: page.hostname, matchCount: 0 }
+    const active = await unlockedSession({ touch: false })
+    return { ok: true, hostname: page.hostname, matchCount: matchesForPage(active, page.href).length }
   }
   throw new Error('Unknown extension action.')
 }
@@ -599,10 +712,18 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     else if (record) await scheduleSessionAlarm(record)
   })()
 })
-chrome.permissions.onRemoved.addListener(async ({ origins = [] }) => {
-  for (const pattern of origins) {
-    const id = scriptIdForPattern(pattern)
-    const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [id] })
-    if (existing.length) await chrome.scripting.unregisterContentScripts({ ids: [id] })
-  }
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!changeInfo.url) return
+  clearFillAuthorizationsForTab(tabId)
+  let nextOrigin = ''
+  try { nextOrigin = new URL(changeInfo.url).origin } catch {}
+  const multiStep = multiStepContexts.get(tabId)
+  if (multiStep && multiStep.origin !== nextOrigin) multiStepContexts.delete(tabId)
+  const pending = pendingCaptures.get(tabId)
+  if (pending && pending.origin !== nextOrigin) pendingCaptures.delete(tabId)
+})
+chrome.tabs.onRemoved.addListener((tabId) => {
+  clearFillAuthorizationsForTab(tabId)
+  multiStepContexts.delete(tabId)
+  pendingCaptures.delete(tabId)
 })

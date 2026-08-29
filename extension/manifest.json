@@ -2,10 +2,19 @@
   "manifest_version": 3,
   "name": "Hush Private Vault",
   "version": "1.0.0",
-  "description": "User-triggered password filling from a local Argon2id and AES-256-GCM encrypted vault.",
+  "description": "Password suggestions and secure filling from a local Argon2id and AES-256-GCM encrypted vault.",
   "minimum_chrome_version": "120",
-  "permissions": ["activeTab", "alarms", "idle", "scripting", "storage"],
-  "optional_host_permissions": ["https://*/*"],
+  "permissions": ["alarms", "idle", "storage"],
+  "host_permissions": ["https://*/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://*/*"],
+      "exclude_matches": ["https://hush-password-manager.vercel.app/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
   "background": {
     "service_worker": "service-worker.js"
   },
