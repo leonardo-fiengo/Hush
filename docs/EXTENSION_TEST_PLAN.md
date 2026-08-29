@@ -17,11 +17,14 @@ Automated tests cover manifest-wide HTTPS activation, removal of per-site regist
 - Open Shadow DOM login: detected; closed third-party Shadow DOM is intentionally unsupported.
 - Registration failure: pending password is not saved.
 - Password-change failure: old saved password remains current.
-- Browser/service-worker restart during a pending change: pending secret is discarded.
+- Ordinary service-worker restart during a pending change: the DEK-encrypted session record resumes; lock, expiry, extension reload, browser restart, or tab closure discards it.
 - Multiple matching accounts: suggestions list all accounts and no account is silently selected.
 - Single exact match: optional automatic fill works only when enabled; same-site, IDN, special-use, registration, and new-password fields remain manual.
 - Multi-step login: selected account or entered username carries to the same-origin password step and clears on unrelated navigation, timeout, lock, completion, and restart.
 - SPA navigation or duplicate script execution: one Hush host remains and stale suggestion authorizations cannot fill the new page.
+- Existing-login capture: submitting a different password for a known username prompts Update; submitting the unchanged saved password creates no redundant prompt.
+- Suggestion dismissal: outside pointer/click and Escape close the surface without changing the page or vault.
+- Never auto-lock: both settings surfaces show a prominent warning and require explicit confirmation before disabling inactivity locking.
 - Service-worker suspension after unlock: the vault remains unlocked and the next user action succeeds without another password prompt.
 - Configured inactivity expiry: the alarm removes the session even if no extension page is open.
 - Device lock: the unlocked session is removed immediately; ordinary `idle` state alone does not override the configured timeout.

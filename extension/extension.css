@@ -46,6 +46,9 @@ button:disabled { cursor: default; opacity: .55; }
 .setting span { display: grid; gap: 4px; }
 .setting small { color: #777a70; font-size: 9px; line-height: 1.45; }
 .setting input[type="checkbox"] { justify-self: end; width: 20px; height: 20px; accent-color: #71842a; }
+.warning-note { display: flex; align-items: flex-start; gap: 9px; margin: -2px 0 14px; padding: 11px; color: #765329; border: 1px solid #ead6a8; border-radius: 10px; background: #fff8e8; font-size: 9px; line-height: 1.5; }
+.warning-note[hidden] { display: none; }
+.warning-note input { flex: 0 0 auto; width: 17px; height: 17px; margin: 1px 0 0; accent-color: #8a6a28; }
 .permission-list { display: grid; grid-template-columns: 100px 1fr; gap: 10px; margin: 0; font-size: 11px; line-height: 1.45; }
 .permission-list dt { font-family: ui-monospace, monospace; font-weight: 800; }
 .permission-list dd { margin: 0; color: #666a60; }

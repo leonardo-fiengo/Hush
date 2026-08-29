@@ -13,7 +13,9 @@ import { generatePassword } from '../../src/lib/passwordGenerator.js'
 import { masterPasswordHealth } from '../../src/lib/passwordRisk.js'
 import { deserializeEnvelope, serializeEnvelope } from '../../src/lib/vaultTransfer.js'
 import { automaticMatch, normalizeFormRequest } from './autofillPolicy.js'
+import { credentialCaptureOperation, existingCredentialForCapture } from './capturePolicy.js'
 import { credentialsForPage } from './domainMatch.js'
+import { openEphemeralState, sealEphemeralState } from './ephemeralState.js'
 import { actionAllowed, classifyMessageSender, externalActionAllowed } from './messagePolicy.js'
 import {
   createSessionRecord,
@@ -34,10 +36,11 @@ const MAX_STAGED_ARCHIVE_CHARACTERS = 4_000_000
 const MAX_SECRET_LENGTH = 4096
 const FILL_AUTHORIZATION_TTL = 2 * 60_000
 const MULTI_STEP_TTL = 5 * 60_000
+const PENDING_CAPTURE_TTL = 10 * 60_000
+const PENDING_CAPTURE_PREFIX = 'pendingCredentialCapture:'
+const MULTI_STEP_PREFIX = 'multiStepLoginContext:'
 
-const pendingCaptures = new Map()
 const fillAuthorizations = new Map()
-const multiStepContexts = new Map()
 
 const storageReady = Promise.all([
   chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
@@ -64,13 +67,54 @@ async function storeEnvelope(envelope) {
   await chrome.storage.local.set({ [STORAGE_KEY]: serializeEnvelope(envelope) })
 }
 
+function tabStateKey(prefix, tabId) {
+  if (!Number.isInteger(tabId) || tabId < 0) throw new Error('Invalid tab context.')
+  return `${prefix}${tabId}`
+}
+
+async function writeTabState(active, prefix, purpose, tabId, value, ttl) {
+  const key = tabStateKey(prefix, tabId)
+  const record = await sealEphemeralState(active.dataKey, { ...value, tabId }, {
+    purpose,
+    expiresAt: Date.now() + ttl,
+  })
+  await storageReady
+  await chrome.storage.session.set({ [key]: record })
+}
+
+async function readTabState(active, prefix, purpose, tabId) {
+  const key = tabStateKey(prefix, tabId)
+  await storageReady
+  const stored = await chrome.storage.session.get(key)
+  if (!stored[key]) return null
+  try {
+    const value = await openEphemeralState(active.dataKey, stored[key], { purpose })
+    if (value.tabId !== tabId) throw new Error('Temporary tab state mismatch.')
+    return value
+  } catch {
+    await chrome.storage.session.remove(key)
+    return null
+  }
+}
+
+async function removeTabState(prefix, tabId) {
+  await storageReady
+  await chrome.storage.session.remove(tabStateKey(prefix, tabId))
+}
+
+async function removeAllEphemeralTabState() {
+  await storageReady
+  const stored = await chrome.storage.session.get(null)
+  const keys = Object.keys(stored).filter((key) => key.startsWith(PENDING_CAPTURE_PREFIX) || key.startsWith(MULTI_STEP_PREFIX))
+  if (keys.length) await chrome.storage.session.remove(keys)
+}
+
 async function clearSession() {
   await storageReady
   await chrome.storage.session.remove([SESSION_KEY, PENDING_AUTH_KEY])
+  await removeAllEphemeralTabState()
   await chrome.alarms.clear(AUTO_LOCK_ALARM)
-  pendingCaptures.clear()
   fillAuthorizations.clear()
-  multiStepContexts.clear()
 }
 
 function sessionPreferences(active) {
@@ -242,14 +286,34 @@ async function trustedCurrentPage(context, reportedPageUrl = '') {
   return current
 }
 
-function currentMultiStepContext(tabId, origin) {
-  const value = multiStepContexts.get(tabId)
+async function currentMultiStepContext(active, tabId, origin) {
+  const value = await readTabState(active, MULTI_STEP_PREFIX, 'multi-step-login', tabId)
   if (!value) return null
-  if (value.origin !== origin || Date.now() - value.createdAt > MULTI_STEP_TTL) {
-    multiStepContexts.delete(tabId)
+  if (value.origin !== origin) {
+    await removeTabState(MULTI_STEP_PREFIX, tabId)
     return null
   }
   return value
+}
+
+async function storeMultiStepContext(active, tabId, value) {
+  await writeTabState(active, MULTI_STEP_PREFIX, 'multi-step-login', tabId, value, MULTI_STEP_TTL)
+}
+
+async function readPendingCapture(active, tabId) {
+  return readTabState(active, PENDING_CAPTURE_PREFIX, 'pending-credential', tabId)
+}
+
+async function storePendingCapture(active, tabId, value) {
+  await writeTabState(active, PENDING_CAPTURE_PREFIX, 'pending-credential', tabId, value, PENDING_CAPTURE_TTL)
+}
+
+async function removePendingCapture(tabId) {
+  await removeTabState(PENDING_CAPTURE_PREFIX, tabId)
+}
+
+async function removeMultiStepContext(tabId) {
+  await removeTabState(MULTI_STEP_PREFIX, tabId)
 }
 
 function authorizeMatches(tabId, page, matches) {
@@ -290,7 +354,7 @@ async function handleContentMessage(message, context) {
     const active = await unlockedSession()
     const page = await trustedCurrentPage(context, message.pageUrl)
     const matches = matchesForPage(active, page.href)
-    const multiStep = currentMultiStepContext(context.tabId, page.origin)
+    const multiStep = await currentMultiStepContext(active, context.tabId, page.origin)
     const requestId = authorizeMatches(context.tabId, page, matches)
     const formRequest = normalizeFormRequest(message.form)
     const automatic = automaticMatch(matches, sessionPreferences(active), formRequest, multiStep)
@@ -298,7 +362,7 @@ async function handleContentMessage(message, context) {
       const mode = formRequest.formKind === 'password-change' ? 'current-password' : 'login'
       await sendCredentialToPage(context, page, automatic, mode)
       fillAuthorizations.delete(requestId)
-      if (automatic.reason === 'multi-step-selection') multiStepContexts.delete(context.tabId)
+      if (automatic.reason === 'multi-step-selection') await removeMultiStepContext(context.tabId)
     }
     return {
       ok: true,
@@ -332,15 +396,14 @@ async function handleContentMessage(message, context) {
     await sendCredentialToPage(context, page, candidate, mode)
     fillAuthorizations.delete(message.requestId)
     if (mode === 'username-step') {
-      multiStepContexts.set(context.tabId, {
+      await storeMultiStepContext(active, context.tabId, {
         origin: page.origin,
         credentialId: candidate.entry.id,
         username: safeText(candidate.entry.username, 512),
         explicitSelection: true,
-        createdAt: Date.now(),
       })
     } else {
-      multiStepContexts.delete(context.tabId)
+      await removeMultiStepContext(context.tabId)
     }
     return { ok: true }
   }
@@ -350,73 +413,88 @@ async function handleContentMessage(message, context) {
     return { ok: true, password: generatePassword() }
   }
   if (message.action === 'stage-login-step') {
-    const active = await unlockedSession()
     const page = await trustedCurrentPage(context, message.pageUrl)
+    const active = await unlockedSession()
     const username = safeText(message.username, 512)
     if (!username) return { ok: true, staged: false }
     const usernameMatches = matchesForPage(active, page.href).filter(({ entry }) => entry.username === username)
-    multiStepContexts.set(context.tabId, {
+    await storeMultiStepContext(active, context.tabId, {
       origin: page.origin,
       credentialId: usernameMatches.length === 1 ? usernameMatches[0].entry.id : '',
       username,
       explicitSelection: false,
-      createdAt: Date.now(),
     })
     return { ok: true, staged: true }
   }
   if (message.action === 'stage-credential') {
-    const active = await unlockedSession()
     const page = await trustedCurrentPage(context, message.pageUrl)
+    const active = await unlockedSession()
     const capture = message.capture
     if (!capture || !['login', 'registration', 'password-change'].includes(capture.kind)) throw new Error('Unsupported credential capture.')
-    const username = safeText(capture.username, 512)
+    const multiStep = await currentMultiStepContext(active, context.tabId, page.origin)
+    const username = safeText(capture.username || multiStep?.username, 512)
     const password = safeSecret(capture.password)
     const currentPassword = safeSecret(capture.currentPassword)
     if (!password) throw new Error('No password was captured.')
     const matches = matchesForPage(active, page.href)
-    const existing = matches.find(({ entry }) => capture.kind === 'password-change'
-      ? (currentPassword && entry.password === currentPassword) || (username && entry.username === username)
-      : username && entry.username === username)
-    pendingCaptures.set(context.tabId, {
+    const existing = existingCredentialForCapture(matches, {
       kind: capture.kind,
+      username,
+      currentPassword,
+      credentialId: multiStep?.credentialId,
+    })
+    const operation = credentialCaptureOperation(existing, password)
+    if (operation === 'unchanged') {
+      await Promise.all([removePendingCapture(context.tabId), removeMultiStepContext(context.tabId)])
+      clearFillAuthorizationsForTab(context.tabId)
+      return { ok: true, staged: false, unchanged: true }
+    }
+    await storePendingCapture(active, context.tabId, {
+      kind: capture.kind,
+      operation,
       origin: page.origin,
+      pageUrl: page.href,
       hostname: page.hostname,
       username,
       password,
       credentialId: existing?.entry.id || '',
       createdAt: Date.now(),
     })
-    multiStepContexts.delete(context.tabId)
+    await removeMultiStepContext(context.tabId)
     clearFillAuthorizationsForTab(context.tabId)
-    return { ok: true, staged: true }
+    return { ok: true, staged: true, operation }
   }
   if (message.action === 'page-ready') {
     const page = await trustedCurrentPage(context, message.pageUrl)
-    const pending = pendingCaptures.get(context.tabId)
-    if (!pending || pending.origin !== page.origin || Date.now() - pending.createdAt > 10 * 60_000) {
-      if (pending) pendingCaptures.delete(context.tabId)
+    const active = await unlockedSession({ touch: false })
+    const pending = await readPendingCapture(active, context.tabId)
+    if (!pending || pending.origin !== page.origin) {
+      if (pending) await removePendingCapture(context.tabId)
       return { ok: true, pending: null }
     }
-    return { ok: true, pending: { kind: pending.kind, hostname: pending.hostname, username: pending.username } }
+    if (message.failureEvidence === true) return { ok: true, pending: null, awaitingSuccess: true }
+    if (page.href === pending.pageUrl && message.successEvidence !== true) return { ok: true, pending: null, awaitingSuccess: true }
+    return { ok: true, pending: { kind: pending.kind, operation: pending.operation, hostname: pending.hostname, username: pending.username } }
   }
   if (message.action === 'discard-pending') {
-    pendingCaptures.delete(context.tabId)
-    multiStepContexts.delete(context.tabId)
+    await Promise.all([removePendingCapture(context.tabId), removeMultiStepContext(context.tabId)])
     return { ok: true }
   }
   if (message.action === 'save-pending') {
     const active = await unlockedSession()
     const page = await trustedCurrentPage(context, message.pageUrl)
-    const pending = pendingCaptures.get(context.tabId)
-    if (!pending || pending.origin !== page.origin || Date.now() - pending.createdAt > 10 * 60_000) throw new Error('That pending credential expired.')
+    const pending = await readPendingCapture(active, context.tabId)
+    if (!pending || pending.origin !== page.origin) throw new Error('That pending credential expired.')
     const now = new Date().toISOString()
     const historyLimit = sessionPreferences(active).passwordHistoryLimit
     let items
-    if (pending.kind === 'password-change') {
-      if (!pending.credentialId) throw new Error('Hush could not identify the existing credential, so it did not overwrite anything.')
-      items = active.payload.items.map((entry) => entry.id === pending.credentialId ? {
+    if (pending.operation === 'update') {
+      const existing = pending.credentialId && active.payload.items.find((entry) => entry.id === pending.credentialId)
+      if (!existing) throw new Error('Hush could not identify the existing credential, so it did not overwrite anything.')
+      items = active.payload.items.map((entry) => entry.id === existing.id ? {
         ...entry,
-        passwordHistory: historyLimit > 0 ? [{ password: entry.password, changedAt: now }, ...(entry.passwordHistory || [])].slice(0, historyLimit) : [],
+        username: pending.username || entry.username,
+        passwordHistory: historyLimit > 0 && entry.password !== pending.password ? [{ password: entry.password, changedAt: now }, ...(entry.passwordHistory || [])].slice(0, historyLimit) : (entry.passwordHistory || []),
         password: pending.password,
         passwordChangedAt: now,
         updatedAt: now,
@@ -424,40 +502,26 @@ async function handleContentMessage(message, context) {
         encryptionVersion: 2,
       } : entry)
     } else {
-      const existing = pending.credentialId && active.payload.items.find((entry) => entry.id === pending.credentialId)
-      if (existing) {
-        items = active.payload.items.map((entry) => entry.id === existing.id ? {
-          ...entry,
-          username: pending.username || entry.username,
-          passwordHistory: historyLimit > 0 && entry.password !== pending.password ? [{ password: entry.password, changedAt: now }, ...(entry.passwordHistory || [])].slice(0, historyLimit) : (entry.passwordHistory || []),
-          password: pending.password,
-          passwordChangedAt: now,
-          updatedAt: now,
-          revision: (entry.revision || 1) + 1,
-        } : entry)
-      } else {
-        items = [{
-          id: crypto.randomUUID(),
-          name: pending.hostname,
-          username: pending.username,
-          password: pending.password,
-          url: pending.origin,
-          notes: 'Saved after user confirmation in the Hush extension.',
-          collection: 'Personal',
-          tags: [],
-          favorite: false,
-          createdAt: now,
-          updatedAt: now,
-          passwordChangedAt: now,
-          passwordHistory: [],
-          revision: 1,
-          encryptionVersion: 2,
-        }, ...active.payload.items]
-      }
+      items = [{
+        id: crypto.randomUUID(),
+        name: pending.hostname,
+        username: pending.username,
+        password: pending.password,
+        url: pending.origin,
+        notes: 'Saved after user confirmation in the Hush extension.',
+        collection: 'Personal',
+        tags: [],
+        favorite: false,
+        createdAt: now,
+        updatedAt: now,
+        passwordChangedAt: now,
+        passwordHistory: [],
+        revision: 1,
+        encryptionVersion: 2,
+      }, ...active.payload.items]
     }
     await replaceSessionEnvelope({ ...active.payload, items })
-    pendingCaptures.delete(context.tabId)
-    multiStepContexts.delete(context.tabId)
+    await Promise.all([removePendingCapture(context.tabId), removeMultiStepContext(context.tabId)])
     return { ok: true }
   }
   throw new Error('Unknown content-script action.')
@@ -715,15 +779,22 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (!changeInfo.url) return
   clearFillAuthorizationsForTab(tabId)
-  let nextOrigin = ''
-  try { nextOrigin = new URL(changeInfo.url).origin } catch {}
-  const multiStep = multiStepContexts.get(tabId)
-  if (multiStep && multiStep.origin !== nextOrigin) multiStepContexts.delete(tabId)
-  const pending = pendingCaptures.get(tabId)
-  if (pending && pending.origin !== nextOrigin) pendingCaptures.delete(tabId)
+  void (async () => {
+    let nextOrigin = ''
+    try { nextOrigin = new URL(changeInfo.url).origin } catch {}
+    const active = await unlockedSession({ touch: false, allowMissing: true })
+    if (!active) return
+    const [multiStep, pending] = await Promise.all([
+      readTabState(active, MULTI_STEP_PREFIX, 'multi-step-login', tabId),
+      readPendingCapture(active, tabId),
+    ])
+    const removals = []
+    if (multiStep && multiStep.origin !== nextOrigin) removals.push(removeMultiStepContext(tabId))
+    if (pending && pending.origin !== nextOrigin) removals.push(removePendingCapture(tabId))
+    await Promise.all(removals)
+  })().catch(() => {})
 })
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearFillAuthorizationsForTab(tabId)
-  multiStepContexts.delete(tabId)
-  pendingCaptures.delete(tabId)
+  void Promise.all([removeMultiStepContext(tabId), removePendingCapture(tabId)]).catch(() => {})
 })

@@ -30,16 +30,27 @@ async function render() {
     const autoLock = element('select')
     for (const [value, label] of [[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [0, 'Never']]) autoLock.append(element('option', { value, text: label }))
     autoLock.value = String(status.preferences.autoLockMinutes)
+    const neverAcknowledgement = element('input', { type: 'checkbox' })
+    const neverWarning = element('label', { className: 'warning-note' }, neverAcknowledgement, element('span', { text: 'Never disables inactivity locking. Hush will remain unlocked until an explicit lock, device lock, extension reload, or browser restart. I understand this risk.' }))
+    neverWarning.hidden = autoLock.value !== '0'
+    autoLock.addEventListener('change', () => {
+      neverAcknowledgement.checked = false
+      neverWarning.hidden = autoLock.value !== '0'
+    })
     const history = element('select')
     for (const [value, label] of [[0, 'Off'], [3, '3 versions'], [5, '5 versions'], [10, '10 versions']]) history.append(element('option', { value, text: label }))
     history.value = String(status.preferences.passwordHistoryLimit)
     const autofill = element('input', { type: 'checkbox' })
     autofill.checked = status.preferences.autofillSingleExact === true
     const save = element('button', { className: 'primary', text: 'Encrypt & save settings', onclick: async () => {
+      if (autoLock.value === '0' && !neverAcknowledgement.checked) {
+        notice.textContent = 'Confirm that you understand the risk before disabling inactivity locking.'
+        return
+      }
       const response = await message({ action: 'update-settings', settings: { autoLockMinutes: Number(autoLock.value), passwordHistoryLimit: Number(history.value), autofillSingleExact: autofill.checked } })
       notice.textContent = response.ok ? 'Settings encrypted and saved.' : response.error
     } })
-    settingsCard.append(element('label', { className: 'setting' }, element('span', { text: 'Lock after inactivity' }), autoLock), element('label', { className: 'setting' }, element('span', { text: 'Encrypted password history' }), history), element('label', { className: 'setting' }, element('span', {}, element('strong', { text: 'Autofill a single exact login match automatically' }), element('small', { text: 'Never selects among multiple accounts or fills same-site, IDN, registration, or new-password fields.' })), autofill), save, notice)
+    settingsCard.append(element('label', { className: 'setting' }, element('span', { text: 'Lock after inactivity' }), autoLock), neverWarning, element('label', { className: 'setting' }, element('span', { text: 'Encrypted password history' }), history), element('label', { className: 'setting' }, element('span', {}, element('strong', { text: 'Autofill a single exact login match automatically' }), element('small', { text: 'Never selects among multiple accounts or fills same-site, IDN, registration, or new-password fields.' })), autofill), save, notice)
   }
   const permissionExplanation = element('section', { className: 'options-card' }, element('h2', { text: 'Why these permissions?' }), element('dl', { className: 'permission-list' }, element('dt', { text: 'https://*/*' }), element('dd', { text: 'Detects login forms and presents suggestions on HTTPS sites. Hush excludes its hosted web app and never runs on HTTP.' }), element('dt', { text: 'storage' }), element('dd', { text: 'Stores only the authenticated encrypted vault envelope and trusted session material.' }), element('dt', { text: 'idle' }), element('dd', { text: 'Locks usable keys when the device becomes locked.' })))
   app.append(header, settingsCard, permissionExplanation)

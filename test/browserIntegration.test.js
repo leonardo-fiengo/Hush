@@ -75,3 +75,34 @@ test('locked pages expose only the Hush control and no credential or generator s
   const summaryBlock = worker.slice(worker.indexOf('function credentialSummary'), worker.indexOf('function matchesForPage'))
   assert.doesNotMatch(summaryBlock, /password/u)
 })
+
+test('pending credentials and multi-step state survive worker sleep only as DEK-encrypted session records', async () => {
+  const worker = await read('extension/src/service-worker.js')
+  assert.match(worker, /sealEphemeralState/u)
+  assert.match(worker, /openEphemeralState/u)
+  assert.match(worker, /chrome\.storage\.session\.set/u)
+  assert.match(worker, /pendingCredentialCapture:/u)
+  assert.match(worker, /multiStepLoginContext:/u)
+  assert.doesNotMatch(worker, /const pendingCaptures = new Map|const multiStepContexts = new Map/u)
+  assert.match(worker, /const fillAuthorizations = new Map/u)
+})
+
+test('suggestions dismiss softly and submission success uses continuing DOM evidence', async () => {
+  const content = await read('extension/src/content.js')
+  assert.match(content, /event\.composedPath\(\)\.includes\(host\)/u)
+  assert.match(content, /event\.key === 'Escape'/u)
+  assert.match(content, /capturePotentialSubmission/u)
+  assert.match(content, /watchForSuccessfulTransition/u)
+  assert.match(content, /new MutationObserver/u)
+  assert.match(content, /successEvidence/u)
+  assert.match(content, /failureEvidence: pageShowsFailure\(\)/u)
+  assert.match(await read('extension/src/service-worker.js'), /message\.failureEvidence === true/u)
+  assert.doesNotMatch(content, /1_?800/u)
+})
+
+test('Never auto-lock requires an explicit warning acknowledgement', async () => {
+  const [options, manager] = await Promise.all([read('extension/src/options.js'), read('src/App.jsx')])
+  assert.match(options, /neverAcknowledgement/u)
+  assert.match(options, /understand the risk before disabling inactivity locking/u)
+  assert.match(manager, /window\.confirm\('Never disables inactivity locking/u)
+})

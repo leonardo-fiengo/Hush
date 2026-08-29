@@ -80,7 +80,7 @@ The extension:
 - blocks HTTPS credentials on HTTP and refuses IDN filling by default;
 - automatically presents matching accounts on focus, supports an opt-in single exact-match autofill setting, and never silently chooses among multiple or same-site accounts;
 - detects normal, dynamic, React-style, login, registration, multi-step, and password-change fields, including open Shadow DOM;
-- offers click-to-generate registration/change passwords, keeps multi-step identity context and captures in memory, and preserves the old password until the user confirms success;
+- offers click-to-generate registration/change passwords, keeps short-lived multi-step and pending-save state DEK-encrypted in trusted browser-session storage, recognizes changed saved passwords, and preserves the old password until the user confirms success;
 - contains no remotely loaded code or custom updater.
 
 The production web origin in `extension/manifest.json` must be verified before store publication. Configure the final browser-store ID as `VITE_HUSH_EXTENSION_ID` in the production web build. The extension can also bootstrap migration by opening the website with its own ID. Until the published ID is configured, use an authenticated `.hush` handoff.

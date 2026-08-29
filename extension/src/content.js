@@ -10,6 +10,8 @@ if (!globalThis.__hushContentLoaded) {
   let requestSerial = 0
   let stagedUsername = ''
   let lastPageUrl = location.href
+  const stagedSubmissions = new WeakMap()
+  const watchedSubmissions = new WeakSet()
   const mutationObserver = new MutationObserver(() => scheduleScan())
 
   const host = document.createElement('div')
@@ -19,17 +21,19 @@ if (!globalThis.__hushContentLoaded) {
   style.textContent = `
     :host { all: initial; position: fixed; z-index: 2147483647; font-family: system-ui, sans-serif; color-scheme: light; }
     button { font: inherit; }
-    .trigger { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; color: #20231d; border: 1px solid #b9ca77; border-radius: 9px; background: #dfff70; box-shadow: 0 5px 18px rgba(0,0,0,.22); cursor: pointer; }
-    .trigger strong { font: 800 13px/1 Georgia, serif; }
-    .panel { position: absolute; top: 34px; right: 0; width: 300px; max-height: min(410px, calc(100vh - 50px)); overflow: auto; color: #20231d; border: 1px solid #d7d9ce; border-radius: 14px; background: #f9faf4; box-shadow: 0 18px 50px rgba(0,0,0,.25); }
+    .trigger { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; color: #56602f; border: 1px solid #d4dac0; border-radius: 9px; background: #f3f7e5; box-shadow: 0 3px 10px rgba(20,24,15,.12); cursor: pointer; opacity: .9; transition: background .15s ease, box-shadow .15s ease, opacity .15s ease; }
+    .trigger:hover, .trigger:focus-visible { background: #e8f5b8; box-shadow: 0 4px 14px rgba(20,24,15,.16); opacity: 1; outline: none; }
+    .trigger strong { font: 750 12px/1 Georgia, serif; }
+    .panel { position: absolute; top: 32px; right: 0; width: 284px; max-height: min(390px, calc(100vh - 48px)); overflow: auto; color: #292c26; border: 1px solid rgba(203,207,194,.9); border-radius: 16px; background: rgba(251,252,247,.98); box-shadow: 0 10px 30px rgba(20,24,15,.16); animation: hush-in .12s ease-out; }
+    @keyframes hush-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
     :host(.above) .panel { top: auto; bottom: 34px; }
     :host(.align-left) .panel { right: auto; left: 0; }
-    .head { display: flex; align-items: center; justify-content: space-between; min-height: 42px; padding: 0 12px; border-bottom: 1px solid #e1e2d8; }
-    .head strong { font-size: 12px; }
+    .head { display: flex; align-items: center; justify-content: space-between; min-height: 40px; padding: 0 12px; border-bottom: 1px solid #e7e8df; }
+    .head strong { font-size: 11px; font-weight: 700; }
     .head button { padding: 4px; border: 0; background: none; cursor: pointer; }
     .site { padding: 10px 12px; color: #696c62; font: 10px/1.45 ui-monospace, monospace; }
-    .choice { display: grid; width: 100%; padding: 11px 12px; text-align: left; border: 0; border-top: 1px solid #e5e6dc; background: #fff; cursor: pointer; }
-    .choice:hover, .choice:focus { background: #f1f5df; outline: none; }
+    .choice { display: grid; width: 100%; padding: 10px 12px; text-align: left; border: 0; border-top: 1px solid #e9eae2; background: rgba(255,255,255,.72); cursor: pointer; }
+    .choice:hover, .choice:focus { background: #f4f7e8; outline: none; }
     .choice strong { color: #22241f; font-size: 11px; }
     .choice span { margin-top: 3px; color: #6d7066; font-size: 9px; }
     .choice small { margin-top: 5px; color: #60701f; font-size: 8px; font-weight: 750; }
@@ -128,16 +132,21 @@ if (!globalThis.__hushContentLoaded) {
 
   function positionTrigger(input) {
     const rect = input.getBoundingClientRect()
-    const left = Math.max(4, Math.min(innerWidth - 32, rect.right - 34))
-    host.style.top = `${Math.max(4, rect.top + (rect.height - 28) / 2)}px`
+    const left = Math.max(4, Math.min(innerWidth - 30, rect.right - 32))
+    host.style.top = `${Math.max(4, rect.top + (rect.height - 26) / 2)}px`
     host.style.left = `${left}px`
-    host.classList.toggle('above', rect.bottom + 420 > innerHeight && rect.top > 180)
-    host.classList.toggle('align-left', left < 300)
+    host.classList.toggle('above', rect.bottom + 400 > innerHeight && rect.top > 180)
+    host.classList.toggle('align-left', left < 284)
     host.hidden = false
   }
 
   function closePanel() {
     shadow.querySelector('.panel')?.remove()
+  }
+
+  function dismissPanel() {
+    requestSerial += 1
+    closePanel()
   }
 
   function createPanel(title = 'Hush') {
@@ -153,7 +162,7 @@ if (!globalThis.__hushContentLoaded) {
     close.type = 'button'
     close.textContent = '\u00d7'
     close.setAttribute('aria-label', 'Close Hush')
-    close.addEventListener('click', closePanel)
+    close.addEventListener('click', dismissPanel)
     head.append(heading, close)
     panel.append(head)
     shadow.append(panel)
@@ -207,23 +216,22 @@ if (!globalThis.__hushContentLoaded) {
     const intent = panelIntent(context, automatic)
     if (!intent.credentials && !intent.generator) return
     const serial = ++requestSerial
-    const panel = createPanel(panelTitle(context, intent))
-    appendSite(panel)
+    closePanel()
     const response = await runtimeMessage({
       action: 'request-credentials',
       pageUrl: context.pageUrl,
       form: formRequest(context),
     })
     if (serial !== requestSerial || activeContext !== context || location.href !== context.pageUrl) return
+    if (response?.autofilled) return closePanel()
+    if (automatic && response?.ok && !intent.generator && !response.credentials?.length) return closePanel()
+    const panel = createPanel(panelTitle(context, intent))
+    appendSite(panel)
     if (!response?.ok) {
       const paragraph = document.createElement('p')
       paragraph.className = 'empty'
       paragraph.textContent = response?.error || 'Open the Hush extension and unlock your vault first.'
       panel.append(paragraph)
-      return
-    }
-    if (response.autofilled) {
-      closePanel()
       return
     }
     if (intent.credentials && response.credentials?.length) {
@@ -314,25 +322,111 @@ if (!globalThis.__hushContentLoaded) {
       || fields.find((field) => /user|login|email/u.test(`${field.name} ${field.getAttribute('aria-label') || ''}`))
   }
 
-  function captureSubmission(event) {
-    const container = event.target
-    if (!(container instanceof HTMLFormElement)) return
+  const SUBMISSION_WORDS = /\b(log\s*in|sign\s*in|register|create|join|continue|next|submit|save|update|change|reset)\b/iu
+  const FAILURE_WORDS = /\b(incorrect|invalid|failed|failure|error|try again|wrong|does not match|didn't match|unable)\b/iu
+  const SUCCESS_WORDS = /\b(signed in|logged in|account (?:created|ready)|password (?:changed|updated)|success|successful|successfully)\b/iu
+
+  function visibleElement(element) {
+    if (!element) return false
+    const styleValue = getComputedStyle(element)
+    return styleValue.display !== 'none' && styleValue.visibility !== 'hidden' && element.getClientRects().length > 0
+  }
+
+  function visibleStatusText(selector, pattern) {
+    return [...document.querySelectorAll(selector)].slice(0, 100).some((element) => visibleElement(element) && pattern.test(element.textContent?.slice(0, 1000) || ''))
+  }
+
+  function pageShowsFailure() {
+    return visibleStatusText('[role="alert"], [aria-live="assertive"], .error, .error-message, .field-error', FAILURE_WORDS)
+  }
+
+  function pageShowsSuccess() {
+    return visibleStatusText('[role="status"], [aria-live="polite"], .success, .success-message, .notice', SUCCESS_WORDS)
+  }
+
+  function pageSuccessEvidence(container = null, beforeUrl = location.href) {
+    if (pageShowsFailure()) return false
+    if (location.href !== beforeUrl) return true
+    const scope = container?.isConnected ? container : document
+    const visiblePasswords = [...(scope.querySelectorAll?.('input[type="password"]') || [])].filter(fieldVisible)
+    return Boolean((container && !container.isConnected) || !visiblePasswords.length || pageShowsSuccess())
+  }
+
+  async function requestPendingPrompt(successEvidence = false) {
+    const response = await runtimeMessage({
+      action: 'page-ready',
+      pageUrl: location.href,
+      successEvidence,
+      failureEvidence: pageShowsFailure(),
+    })
+    if (response?.pending) showSavePrompt(response.pending)
+    return response
+  }
+
+  async function probePendingPrompt() {
+    for (const delay of [0, 400, 1_200]) {
+      if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay))
+      const response = await requestPendingPrompt(pageSuccessEvidence())
+      if (response?.pending || response?.awaitingSuccess) return
+    }
+  }
+
+  function watchForSuccessfulTransition(container, beforeUrl) {
+    if (watchedSubmissions.has(container)) return
+    watchedSubmissions.add(container)
+    let checkTimer = null
+    let finished = false
+    const observer = new MutationObserver(() => {
+      if (checkTimer || finished) return
+      checkTimer = window.setTimeout(check, 120)
+    })
+    const timeout = window.setTimeout(cleanup, 12_000)
+
+    function cleanup() {
+      if (finished) return
+      finished = true
+      observer.disconnect()
+      if (checkTimer) window.clearTimeout(checkTimer)
+      window.clearTimeout(timeout)
+      watchedSubmissions.delete(container)
+    }
+
+    function check() {
+      checkTimer = null
+      if (finished || !pageSuccessEvidence(container, beforeUrl)) return
+      cleanup()
+      void requestPendingPrompt(true)
+    }
+
+    observer.observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'style', 'class'] })
+    checkTimer = window.setTimeout(check, 500)
+  }
+
+  function stageCredentialContainer(container) {
+    if (!(container instanceof Element)) return null
+    const recent = stagedSubmissions.get(container)
+    if (recent && Date.now() - recent.createdAt < 300) return recent.promise
     const fields = [...container.querySelectorAll('input')].filter(fieldVisible)
     const analysis = classifyFormSignals({ fields: fields.map(inputDescriptor), text: container.textContent?.slice(0, 2000), path: location.pathname })
     const usernameField = usernameFieldFor(fields)
     if (analysis.kind === 'username-step') {
       const username = String(usernameField?.value || '').slice(0, 512)
-      if (username) void runtimeMessage({ action: 'stage-login-step', username, pageUrl: location.href })
-      return
+      return username ? runtimeMessage({ action: 'stage-login-step', username, pageUrl: location.href }) : null
     }
     const passwordFields = fields.filter((field) => field.type === 'password')
-    const currentField = passwordFields.find((field) => field.autocomplete === 'current-password' || /current|old/u.test(field.name))
-    const newFields = passwordFields.filter((field) => field.autocomplete === 'new-password' || /new|confirm|repeat/u.test(field.name))
+    const currentField = passwordFields.find((field) => {
+      const descriptor = inputDescriptor(field)
+      return descriptor.autocomplete === 'current-password' || /current|old/u.test(`${descriptor.name} ${descriptor.label}`)
+    })
+    const newFields = passwordFields.filter((field) => {
+      const descriptor = inputDescriptor(field)
+      return descriptor.autocomplete === 'new-password' || /new|confirm|repeat/u.test(`${descriptor.name} ${descriptor.label}`)
+    })
     const password = (analysis.kind === 'registration' || analysis.kind === 'password-change') ? newFields[0]?.value || passwordFields.at(-1)?.value : passwordFields[0]?.value
-    if (!password || password.length > 4096) return
+    if (!password || password.length > 4096) return null
     const username = usernameField?.value || stagedUsername
     const beforeUrl = location.href
-    void runtimeMessage({
+    const promise = runtimeMessage({
       action: 'stage-credential',
       pageUrl: beforeUrl,
       capture: {
@@ -341,19 +435,36 @@ if (!globalThis.__hushContentLoaded) {
         password,
         currentPassword: String(currentField?.value || '').slice(0, 4096),
       },
-    }).then((response) => {
-      if (!response?.ok) return
-      window.setTimeout(async () => {
-        const transitioned = location.href !== beforeUrl || !container.isConnected || ![...container.querySelectorAll('input[type="password"]')].some(fieldVisible)
-        if (!transitioned) return
-        const pendingResponse = await runtimeMessage({ action: 'page-ready', pageUrl: location.href })
-        if (pendingResponse?.pending) showSavePrompt(pendingResponse.pending)
-      }, 1800)
     })
+    stagedSubmissions.set(container, { createdAt: Date.now(), promise })
+    void promise.then((response) => {
+      if (response?.ok && response.staged) watchForSuccessfulTransition(container, beforeUrl)
+    })
+    return promise
+  }
+
+  function captureSubmission(event) {
+    if (event.target instanceof Element) stageCredentialContainer(event.target)
+  }
+
+  function capturePotentialSubmission(event) {
+    if (event.button !== undefined && event.button !== 0) return
+    const target = event.target instanceof Element ? event.target : null
+    const control = target?.closest('button, input[type="submit"], input[type="image"], [role="button"]')
+    if (!control || control.closest('[aria-label="Hush password manager"]')) return
+    const type = String(control.getAttribute('type') || '').toLowerCase()
+    const label = `${control.textContent || ''} ${control.getAttribute('aria-label') || ''} ${control.getAttribute('value') || ''}`
+    if ((type === 'button' || control.getAttribute('role') === 'button') && !SUBMISSION_WORDS.test(label)) return
+    let container = control.closest('form, [role="form"]')
+    for (let parent = control.parentElement, depth = 0; !container && parent && depth < 5; parent = parent.parentElement, depth += 1) {
+      if (parent.querySelector('input[type="password"]')) container = parent
+    }
+    if (container) stageCredentialContainer(container)
   }
 
   function showSavePrompt(pending) {
-    const panel = createPanel(pending.kind === 'password-change' ? 'Update saved password in Hush?' : 'Save this login in Hush?')
+    const updating = pending.operation === 'update'
+    const panel = createPanel(updating ? 'Update saved password in Hush?' : 'Save this login in Hush?')
     const body = document.createElement('div')
     body.className = 'save'
     const message = document.createElement('p')
@@ -367,7 +478,7 @@ if (!globalThis.__hushContentLoaded) {
     const save = document.createElement('button')
     save.type = 'button'
     save.className = 'primary'
-    save.textContent = pending.kind === 'password-change' ? 'Update' : 'Save'
+    save.textContent = updating ? 'Update' : 'Save'
     save.addEventListener('click', async () => {
       const response = await runtimeMessage({ action: 'save-pending', pageUrl: location.href })
       if (!response?.ok) showError(response?.error || 'Hush could not save that credential.')
@@ -411,9 +522,7 @@ if (!globalThis.__hushContentLoaded) {
     stagedUsername = ''
     closePanel()
     host.hidden = true
-    void runtimeMessage({ action: 'page-ready', pageUrl: location.href }).then((response) => {
-      if (response?.pending) showSavePrompt(response.pending)
-    })
+    void probePendingPrompt()
   }
 
   function scan() {
@@ -429,6 +538,13 @@ if (!globalThis.__hushContentLoaded) {
 
   trigger.addEventListener('click', () => { void openPanel({ automatic: false }) })
   document.addEventListener('submit', captureSubmission, true)
+  document.addEventListener('pointerdown', (event) => {
+    if (!event.composedPath().includes(host)) dismissPanel()
+    capturePotentialSubmission(event)
+  }, true)
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') dismissPanel()
+  }, true)
   window.addEventListener('popstate', checkPageTransition)
   window.addEventListener('hashchange', checkPageTransition)
   window.addEventListener('resize', () => activeContext?.input && positionTrigger(activeContext.input), { passive: true })
@@ -442,7 +558,5 @@ if (!globalThis.__hushContentLoaded) {
     return false
   })
 
-  void runtimeMessage({ action: 'page-ready', pageUrl: location.href }).then((response) => {
-    if (response?.pending) showSavePrompt(response.pending)
-  })
+  void probePendingPrompt()
 }

@@ -69,7 +69,7 @@ A `.hush` file contains ciphertext, KDF parameters, salts, nonces, wrapped DEK c
 - The session DEK is kept only in Chromium's in-memory session storage; each temporary byte buffer is cleared after importing a non-extractable Web Crypto key.
 - Lock on browser-profile restart, extension reload/update, manual request, configured Hush inactivity, device lock, or an elapsed sleep interval.
 - Clipboard writes occur only after a user click and are cleared on a configurable best-effort timer. Clipboard history software may retain values.
-- Credential updates are staged in extension memory and applied only after the user confirms that the website accepted the transaction.
+- Credential updates and multi-step context are staged as purpose-bound AES-GCM ciphertext in trusted browser-session storage with short authenticated expiries; updates are applied only after the user confirms that the website accepted the transaction, while exact-page fill authorizations remain non-persistent.
 - Automatic fill is off by default and, when enabled, requires one exact HTTPS match; same-site, multiple-account, IDN, special-use, registration, and new-password cases remain interactive.
 - Same-site fallback uses parsed registrable domains with private-suffix awareness, never substring or raw suffix matching.
 - Previous passwords remain encrypted, have timestamps and bounded retention, and can be deleted manually.

@@ -8,7 +8,7 @@ Hush is a local-first password manager. This policy describes the application in
 
 The standalone/migration web app may store one authenticated encrypted vault envelope in IndexedDB. When the Chromium extension is connected, it is authoritative and stores one authenticated encrypted envelope in `chrome.storage.local`; the website no longer presents the disconnected web manager. Envelopes contain ciphertext, salts, nonces, KDF settings, wrapped encryption keys, format/revision metadata, and authentication tags.
 
-When the extension is unlocked, `chrome.storage.session` holds the random DEK's session material, vault identity/revision, and expiry metadata in memory. It holds neither the master password nor plaintext vault. A worker temporarily imports that material as a non-extractable key and decrypts an authenticated envelope for an operation. Generated passwords, credential plaintext, and parsed imports also exist temporarily in trusted extension memory. A recovery key is shown once and is not stored by Hush.
+When the extension is unlocked, `chrome.storage.session` holds the random DEK's session material, vault identity/revision, and expiry metadata in memory. Short-lived pending credentials and multi-step login context are separately encrypted with that DEK before entering session storage. Session storage holds neither the master password nor plaintext vault. A worker temporarily imports the DEK as a non-extractable key and decrypts authenticated data for an operation. Generated passwords, credential plaintext, and parsed imports also exist temporarily in trusted extension memory. A recovery key is shown once and is not stored by Hush.
 
 ## Where data goes
 
@@ -41,7 +41,7 @@ Hush writes a value to the clipboard only after a user clicks Copy. It attempts 
 
 ## Retention and deletion
 
-Encrypted data remains on a device until the user removes the local vault, clears browser/extension storage, or uninstalls the extension. Password history retention is configurable and can be deleted from the vault. The unlocked extension session is removed on explicit lock, configured inactivity, device lock, extension reload/update, or browser-profile restart. Pending captures and short-lived multi-step login context are memory-only, expire, and are discarded on lock or service-worker restart.
+Encrypted data remains on a device until the user removes the local vault, clears browser/extension storage, or uninstalls the extension. Password history retention is configurable and can be deleted from the vault. The unlocked extension session is removed on explicit lock, configured inactivity, device lock, extension reload/update, or browser-profile restart. Pending captures and multi-step context have short authenticated expiries, survive ordinary service-worker sleep only as ciphertext, and are discarded on lock, tab closure, expiry, unrelated navigation, extension reload, or browser-profile restart.
 
 Hush has no account database, so there is currently no server-side account-deletion process. If accounts or synchronization are introduced, this policy must document retention, deletion, subprocessors, and data-subject request handling before launch.
 

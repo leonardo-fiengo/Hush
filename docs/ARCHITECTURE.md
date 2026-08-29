@@ -64,7 +64,7 @@ Multi-device envelopes use revision ordering and deterministic change IDs for co
 
 After authentication, Hush places only the random DEK's base64 session material, vault identity/revision, and activity timestamps in `chrome.storage.session`. Chromium keeps this area in memory, does not expose it to content scripts under Hush's access policy, and clears it on extension reload/update or browser-profile restart. A recreated service worker imports the bytes into a non-extractable Web Crypto key, authenticates and decrypts the current envelope, then overwrites the temporary byte buffer. The master password and plaintext payload are not stored in session storage.
 
-Configured inactivity is enforced both on privileged operations and with `chrome.alarms`. User activity slides the deadline. Device lock clears the session immediately; normal worker suspension does not. Pending website captures deliberately remain worker-memory-only, so a worker restart discards an unconfirmed password update safely.
+Configured inactivity is enforced both on privileged operations and with `chrome.alarms`. User activity slides the deadline. Device lock clears the session immediately; normal worker suspension does not. Pending credentials and multi-step login context use purpose-bound AES-GCM records encrypted with the unlocked DEK in trusted `chrome.storage.session`. They survive ordinary worker suspension with short TTLs but clear on lock, expiry, tab closure, unrelated navigation, extension reload, or browser-profile restart. Exact-page fill authorizations remain worker-memory-only so a restarted worker cannot reuse a stale release decision.
 
 ```text
 permitted HTTPS top-level page
@@ -84,7 +84,7 @@ The manifest receives persistent `https://*/*` host access once at install so lo
 
 Focus automatically requests safe summaries. Manual fill remains available for exact and labeled same-registrable-domain matches. Optional automatic fill is encrypted in vault preferences and is limited to one exact, HTTPS, non-IDN, non-special-use match; registration, new-password, same-site, and ambiguous matches are never silently filled. The worker binds each suggestion response to a short-lived request ID and exact tab URL, then revalidates both before releasing only the selected credential.
 
-Registration and password-change values remain pending in service-worker memory. Generated passwords require a click, and the old credential remains untouched until a same-origin page asks the user to confirm success. Multi-step login state stores only a short-lived username or credential ID in worker memory and is cleared on timeout, unrelated navigation, lock, restart, or completion. Service-worker restart safely discards all unconfirmed operations.
+Registration and password-change values remain pending as short-lived DEK-encrypted session records. Generated passwords require a click, and the old credential remains untouched until a same-origin page presents success evidence and the user confirms Save or Update. Multi-step login state stores a short-lived encrypted username or credential ID and is cleared on timeout, unrelated navigation, lock, browser restart, or completion. A service-worker restart can resume these records only while the trusted unlocked session still exists.
 
 ## Password intelligence
 

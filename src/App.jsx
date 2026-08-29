@@ -724,6 +724,15 @@ function InstallAppCard({ installed, canInstall, onInstall }) {
 }
 
 function SettingsView({ encrypted, autoLockMinutes, setAutoLockMinutes, clipboardClearSeconds, setClipboardClearSeconds, passwordHistoryLimit, setPasswordHistoryLimit, autofillSingleExact, setAutofillSingleExact, onExport, onRestoreFile, onChangePassword, onLock, onProtect, onLogout, deviceLink, installApp }) {
+  function chooseAutoLock(event) {
+    const minutes = Number(event.target.value)
+    if (minutes === 0 && !window.confirm('Never disables inactivity locking. Hush will remain unlocked until you explicitly lock it, the device locks, the extension reloads, or the browser restarts. Continue?')) {
+      event.target.value = String(autoLockMinutes)
+      return
+    }
+    setAutoLockMinutes(minutes)
+  }
+
   return (
     <main className="settings-view page-enter">
       <header className="page-heading"><div><p className="eyebrow"><Settings size={14} /> Vault preferences</p><h1>Fewer switches.<br /><em>Better defaults.</em></h1><p className="heading-copy">Security choices should be understandable, not a maze of fine print.</p></div></header>
@@ -732,7 +741,8 @@ function SettingsView({ encrypted, autoLockMinutes, setAutoLockMinutes, clipboar
         <InstallAppCard {...installApp} />
         <section className="settings-card">
           <div className="settings-card-title"><span><LockKeyhole size={20} /></span><div><h2>Vault access</h2><p>Lock this vault, or remove its local copy to switch vaults.</p></div></div>
-          <label className="setting-row"><span><strong>Lock after</strong><small>Mouse and keyboard activity reset the timer.</small></span><select value={autoLockMinutes} onChange={(event) => setAutoLockMinutes(Number(event.target.value))}><option value={5}>5 minutes</option><option value={15}>15 minutes</option><option value={30}>30 minutes</option><option value={60}>1 hour</option><option value={0}>Never</option></select></label>
+          <label className="setting-row"><span><strong>Lock after</strong><small>Mouse and keyboard activity reset the timer.</small></span><select value={autoLockMinutes} onChange={chooseAutoLock}><option value={5}>5 minutes</option><option value={15}>15 minutes</option><option value={30}>30 minutes</option><option value={60}>1 hour</option><option value={0}>Never</option></select></label>
+          {autoLockMinutes === 0 && <div className="honest-note"><AlertTriangle size={16} /><p>Inactivity locking is disabled. Hush remains unlocked until an explicit lock, device lock, extension reload, or browser restart.</p></div>}
           <label className="setting-row"><span><strong>Password history</strong><small>Previous values remain inside the encrypted vault.</small></span><select value={passwordHistoryLimit} onChange={(event) => setPasswordHistoryLimit(Number(event.target.value))}><option value={0}>Off</option><option value={3}>3 versions</option><option value={5}>5 versions</option><option value={10}>10 versions</option></select></label>
           <label className="setting-row"><span><strong>Automatic exact-match fill</strong><small>Fills only one unambiguous exact HTTPS login; suggestions remain available in every other case.</small></span><select value={autofillSingleExact ? 'on' : 'off'} onChange={(event) => setAutofillSingleExact(event.target.value === 'on')}><option value="off">Off</option><option value="on">On</option></select></label>
           <button className="settings-action" type="button" onClick={encrypted ? onLock : onProtect}><Lock size={16} /> {encrypted ? 'Lock right now' : 'Create a protected vault'}<ArrowRight size={16} /></button>
