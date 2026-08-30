@@ -1,4 +1,5 @@
 export const CONTENT_ACTIONS = new Set([
+  'request-unlock',
   'request-credentials',
   'fill-credential',
   'generate-password',
@@ -6,6 +7,7 @@ export const CONTENT_ACTIONS = new Set([
   'page-ready',
   'save-pending',
   'discard-pending',
+  'undo-auto-update',
   'stage-login-step',
 ])
 
@@ -63,7 +65,7 @@ export function classifyMessageSender(sender, { extensionId, extensionOrigin }) 
   }
   if (tabUrl.origin !== senderUrl.origin) return { kind: 'invalid' }
   if (sender.origin && sender.origin !== senderUrl.origin) return { kind: 'invalid' }
-  return { kind: 'content', url: senderUrl, tabId: sender.tab.id }
+  return { kind: 'content', url: senderUrl, tabId: sender.tab.id, windowId: sender.tab.windowId }
 }
 
 export function actionAllowed(kind, action) {

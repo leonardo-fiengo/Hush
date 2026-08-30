@@ -23,7 +23,15 @@ Automated tests cover manifest-wide HTTPS activation, removal of per-site regist
 - Multi-step login: selected account or entered username carries to the same-origin password step and clears on unrelated navigation, timeout, lock, completion, and restart.
 - SPA navigation or duplicate script execution: one Hush host remains and stale suggestion authorizations cannot fill the new page.
 - Existing-login capture: submitting a different password for a known username prompts Update; submitting the unchanged saved password creates no redundant prompt.
+- Generated-password durability: generation atomically creates only an encrypted, unsubmitted session candidate; worker sleep preserves it, abandonment never produces a save prompt, and submission promotes it before success detection.
+- Field semantics: autocomplete token lists, text-revealed passwords, form-associated controls, Enter/custom-button submissions, and unlabeled matching confirmation pairs are recognized; OTP fields and mismatched confirmations are not captured.
+- Password-only update: one exact fillable saved login may be updated without a username; same-site, blocked, or multiple candidates never select an arbitrary entry.
+- Automatic changed-password update: with the opt-in disabled, the normal Update prompt remains; with it enabled, only a uniquely identified, exact HTTPS login plus explicit success evidence commits automatically.
+- Automatic-update rollback: the previous secret is DEK-encrypted in session storage, scoped to the same tab/origin, expires after ten minutes, survives ordinary worker sleep, and refuses to overwrite any later credential revision.
+- Duplicate success probes: concurrent page-ready signals serialize per tab and change the vault at most once.
 - Suggestion dismissal: outside pointer/click and Escape close the surface without changing the page or vault.
+- Locked-field handoff: focus shows only the small control; an explicit click opens packaged extension UI, successful unlock resumes the same connected field, and the website never receives the master password.
+- Handoff invalidation: different request ID, tab, window, origin, exact page URL, disconnected field, navigation/reload, tab closure, or two-minute expiry refuses resumption and clears routing state.
 - Never auto-lock: both settings surfaces show a prominent warning and require explicit confirmation before disabling inactivity locking.
 - Service-worker suspension after unlock: the vault remains unlocked and the next user action succeeds without another password prompt.
 - Configured inactivity expiry: the alarm removes the session even if no extension page is open.
@@ -52,4 +60,4 @@ Use synthetic accounts and record browser/version, form type, result, and screen
 | Framework | React, Vue, Angular local fixtures | [ ] | [ ] | [ ] | [ ] |
 | Traditional | Server-rendered local fixture | [ ] | n/a | [ ] | [ ] |
 
-Release blockers: cross-domain fill, ambiguous/same-site/registration automatic fill, filling after the authorized page URL changes, saving before success confirmation, overwriting a password after a failed change, complete-vault exposure to a content script or website, master-password entry on the hosted migration page, unexpected lock on ordinary worker suspension, session survival after explicit/device lock, or session material persisting to disk.
+Release blockers: cross-domain fill, ambiguous/same-site/registration automatic fill, filling after the authorized page URL changes, resuming an unlock on a different or navigated field, saving before success confirmation, overwriting a password after a failed change, complete-vault exposure to a content script or website, master-password entry on any website surface, unexpected lock on ordinary worker suspension, session survival after explicit/device lock, or session material persisting to disk.

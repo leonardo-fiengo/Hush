@@ -47,7 +47,7 @@ When the extension is detected, the website becomes a status/open/migration surf
 
 ### Chromium extension
 
-The service worker is privileged and owns vault operations. Popup/options/full-manager pages are trusted packaged extension pages. `chrome.storage.session` holds only DEK session material plus identity and expiry metadata and is restricted to trusted extension contexts. Content scripts and every web page are less trusted. A content script cannot choose the domain being searched, request the full vault, export a vault, or invoke privileged extension-page actions.
+The service worker is privileged and owns vault operations. Popup/options/full-manager pages are trusted packaged extension pages. `chrome.storage.session` holds DEK session material plus identity/expiry metadata, DEK-encrypted temporary credential state while unlocked, and non-secret short-lived unlock-routing metadata while locked; it is restricted to trusted extension contexts. Content scripts and every web page are less trusted. A content script cannot choose the domain being searched, request the full vault, export a vault, enter the master password, or invoke privileged extension-page actions. Unlock resumption is bound independently by the worker to the live tab/window/origin and by the isolated content script to its random request, exact page URL, and still-connected field.
 
 Only the top frame is supported. Cross-origin and nested frames are rejected rather than receiving credentials. The service worker derives the actual URL from the browser-provided sender and live tab, verifies sender ID, sender URL, sender origin, top-tab URL, and frame ID, binds returned summaries to a short-lived request ID and exact page URL, then repeats the live-tab check immediately before filling.
 
@@ -69,7 +69,7 @@ A `.hush` file contains ciphertext, KDF parameters, salts, nonces, wrapped DEK c
 - The session DEK is kept only in Chromium's in-memory session storage; each temporary byte buffer is cleared after importing a non-extractable Web Crypto key.
 - Lock on browser-profile restart, extension reload/update, manual request, configured Hush inactivity, device lock, or an elapsed sleep interval.
 - Clipboard writes occur only after a user click and are cleared on a configurable best-effort timer. Clipboard history software may retain values.
-- Credential updates and multi-step context are staged as purpose-bound AES-GCM ciphertext in trusted browser-session storage with short authenticated expiries; updates are applied only after the user confirms that the website accepted the transaction, while exact-page fill authorizations remain non-persistent.
+- Credential updates and multi-step context are staged as purpose-bound AES-GCM ciphertext in trusted browser-session storage with short authenticated expiries; changed logins require confirmation unless the user enables the conservative exact-match automatic-update policy, while exact-page fill authorizations remain non-persistent.
 - Automatic fill is off by default and, when enabled, requires one exact HTTPS match; same-site, multiple-account, IDN, special-use, registration, and new-password cases remain interactive.
 - Same-site fallback uses parsed registrable domains with private-suffix awareness, never substring or raw suffix matching.
 - Previous passwords remain encrypted, have timestamps and bounded retention, and can be deleted manually.

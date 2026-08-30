@@ -30,3 +30,10 @@ test('does not overwrite an arbitrary duplicate username', () => {
   const duplicated = [...matches, { entry: { id: 'duplicate', username: 'you@example.com', password: 'another-password' } }]
   assert.equal(existingCredentialForCapture(duplicated, { kind: 'login', username: 'you@example.com' }), null)
 })
+
+test('recognizes a password-only update only for one exact fillable credential', () => {
+  const exact = [{ ...matches[0], match: { fillable: true, matchType: 'exact' } }]
+  assert.equal(existingCredentialForCapture(exact, { kind: 'login' })?.entry.id, 'personal')
+  assert.equal(existingCredentialForCapture([{ ...matches[0], match: { fillable: true, matchType: 'same-site' } }], { kind: 'login' }), null)
+  assert.equal(existingCredentialForCapture(exact.map((candidate) => ({ ...candidate, match: { fillable: false, matchType: 'exact' } })), { kind: 'login' }), null)
+})

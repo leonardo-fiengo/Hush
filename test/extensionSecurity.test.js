@@ -14,6 +14,7 @@ test('rejects spoofed, cross-frame, and unknown extension messages', () => {
   assert.equal(classifyMessageSender({ id: extensionId, url: 'https://example.com', origin: 'https://example.com', tab: { id: 1, url: 'https://evil.test' }, frameId: 0 }, { extensionId, extensionOrigin }).kind, 'invalid')
   assert.equal(classifyMessageSender({ id: extensionId, url: `${extensionOrigin}/popup.html`, frameId: 0 }, { extensionId, extensionOrigin }).kind, 'extension')
   assert.equal(actionAllowed('content', 'request-credentials'), true)
+  assert.equal(actionAllowed('content', 'request-unlock'), true)
   assert.equal(actionAllowed('content', 'stage-login-step'), true)
   assert.equal(actionAllowed('content', 'export-vault'), false)
   assert.equal(actionAllowed('content', 'getPassword'), false)
@@ -58,7 +59,7 @@ test('web CSP permits bundled WebAssembly without enabling general string evalua
 })
 
 test('production extension sources avoid remote code and DOM secret attributes', async () => {
-  const files = await Promise.all(['content.js', 'service-worker.js', 'popup.js', 'options.js', 'ephemeralState.js', 'capturePolicy.js'].map((name) => readFile(new URL(`../extension/src/${name}`, import.meta.url), 'utf8')))
+  const files = await Promise.all(['content.js', 'service-worker.js', 'popup.js', 'options.js', 'ephemeralState.js', 'capturePolicy.js', 'captureDetection.js', 'formDetection.js', 'autoUpdatePolicy.js', 'unlockHandoffPolicy.js'].map((name) => readFile(new URL(`../extension/src/${name}`, import.meta.url), 'utf8')))
   const source = files.join('\n')
   assert.doesNotMatch(source, /\.innerHTML\s*=|\.outerHTML\s*=|\beval\s*\(|new\s+Function\s*\(/u)
   assert.doesNotMatch(source, /data-password|https?:\/\/[^'"`]*\.js/u)

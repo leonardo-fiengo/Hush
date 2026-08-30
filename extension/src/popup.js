@@ -143,10 +143,14 @@ function renderLocked(state) {
     if (!response.ok) {
       unlock.disabled = false
       status.replaceChildren(errorNode(response.error))
-    } else await render()
+    } else if (response.resumed) window.close()
+    else await render()
   } })
   password.addEventListener('keydown', (event) => { if (event.key === 'Enter') unlock.click() })
-  app.append(brand(), element('section', { className: 'card' }, element('p', { className: 'eyebrow', text: state.externalArchiveWaiting ? 'ENCRYPTED VAULT WAITING' : 'VAULT SEALED' }), element('h1', { text: 'Hush is locked.' }), element('p', { className: 'copy', text: 'Unlock locally to show and fill website suggestions. The session key is removed on lock, timeout, extension reload, or browser restart.' }), element('label', { className: 'field' }, element('span', { text: 'Master password' }), password), unlock, status))
+  const copy = state.unlockHandoff
+    ? `Unlock locally to continue on ${state.unlockHandoff.hostname}. The website cannot see this window or your master password.`
+    : 'Unlock locally to show and fill website suggestions. The session key is removed on lock, timeout, extension reload, or browser restart.'
+  app.append(brand(), element('section', { className: 'card' }, element('p', { className: 'eyebrow', text: state.externalArchiveWaiting ? 'ENCRYPTED VAULT WAITING' : state.unlockHandoff ? 'CONTINUE ON WEBSITE' : 'VAULT SEALED' }), element('h1', { text: 'Hush is locked.' }), element('p', { className: 'copy', text: copy }), element('label', { className: 'field' }, element('span', { text: 'Master password' }), password), unlock, status))
   password.focus()
 }
 

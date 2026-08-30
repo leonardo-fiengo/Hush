@@ -42,15 +42,17 @@ async function render() {
     history.value = String(status.preferences.passwordHistoryLimit)
     const autofill = element('input', { type: 'checkbox' })
     autofill.checked = status.preferences.autofillSingleExact === true
+    const autoUpdate = element('input', { type: 'checkbox' })
+    autoUpdate.checked = status.preferences.autoUpdateExactPasswords === true
     const save = element('button', { className: 'primary', text: 'Encrypt & save settings', onclick: async () => {
       if (autoLock.value === '0' && !neverAcknowledgement.checked) {
         notice.textContent = 'Confirm that you understand the risk before disabling inactivity locking.'
         return
       }
-      const response = await message({ action: 'update-settings', settings: { autoLockMinutes: Number(autoLock.value), passwordHistoryLimit: Number(history.value), autofillSingleExact: autofill.checked } })
+      const response = await message({ action: 'update-settings', settings: { autoLockMinutes: Number(autoLock.value), passwordHistoryLimit: Number(history.value), autofillSingleExact: autofill.checked, autoUpdateExactPasswords: autoUpdate.checked } })
       notice.textContent = response.ok ? 'Settings encrypted and saved.' : response.error
     } })
-    settingsCard.append(element('label', { className: 'setting' }, element('span', { text: 'Lock after inactivity' }), autoLock), neverWarning, element('label', { className: 'setting' }, element('span', { text: 'Encrypted password history' }), history), element('label', { className: 'setting' }, element('span', {}, element('strong', { text: 'Autofill a single exact login match automatically' }), element('small', { text: 'Never selects among multiple accounts or fills same-site, IDN, registration, or new-password fields.' })), autofill), save, notice)
+    settingsCard.append(element('label', { className: 'setting' }, element('span', { text: 'Lock after inactivity' }), autoLock), neverWarning, element('label', { className: 'setting' }, element('span', { text: 'Encrypted password history' }), history), element('label', { className: 'setting' }, element('span', {}, element('strong', { text: 'Autofill a single exact login match automatically' }), element('small', { text: 'Never selects among multiple accounts or fills same-site, IDN, registration, or new-password fields.' })), autofill), element('label', { className: 'setting' }, element('span', {}, element('strong', { text: 'Update exact-match passwords after successful sign-in' }), element('small', { text: 'Only clearly identified exact HTTPS logins update automatically. Hush shows a short-lived encrypted Undo action; uncertain cases still ask.' })), autoUpdate), save, notice)
   }
   const permissionExplanation = element('section', { className: 'options-card' }, element('h2', { text: 'Why these permissions?' }), element('dl', { className: 'permission-list' }, element('dt', { text: 'https://*/*' }), element('dd', { text: 'Detects login forms and presents suggestions on HTTPS sites. Hush excludes its hosted web app and never runs on HTTP.' }), element('dt', { text: 'storage' }), element('dd', { text: 'Stores only the authenticated encrypted vault envelope and trusted session material.' }), element('dt', { text: 'idle' }), element('dd', { text: 'Locks usable keys when the device becomes locked.' })))
   app.append(header, settingsCard, permissionExplanation)

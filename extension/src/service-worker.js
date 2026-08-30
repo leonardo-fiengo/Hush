@@ -13,6 +13,7 @@ import { generatePassword } from '../../src/lib/passwordGenerator.js'
 import { masterPasswordHealth } from '../../src/lib/passwordRisk.js'
 import { deserializeEnvelope, serializeEnvelope } from '../../src/lib/vaultTransfer.js'
 import { automaticMatch, normalizeFormRequest } from './autofillPolicy.js'
+import { automaticPasswordUpdateEligible, createAutomaticUpdateUndo, restoreAutomaticUpdate } from './autoUpdatePolicy.js'
 import { credentialCaptureOperation, existingCredentialForCapture } from './capturePolicy.js'
 import { credentialsForPage } from './domainMatch.js'
 import { openEphemeralState, sealEphemeralState } from './ephemeralState.js'
@@ -24,12 +25,15 @@ import {
   sessionRecordIsValid,
   touchSessionRecord,
 } from './sessionPolicy.js'
+import { createUnlockHandoff, UNLOCK_HANDOFF_TTL, unlockHandoffIsValid, unlockHandoffMatchesTab } from './unlockHandoffPolicy.js'
 
 const STORAGE_KEY = 'encryptedVaultArchive'
 const SESSION_KEY = 'unlockedVaultSession'
 const PENDING_IMPORT_KEY = 'pendingEncryptedWebVault'
 const PENDING_AUTH_KEY = 'pendingAuthenticatedEnvelope'
+const UNLOCK_HANDOFF_KEY = 'pendingUnlockHandoff'
 const AUTO_LOCK_ALARM = 'hush-auto-lock'
+const UNLOCK_HANDOFF_ALARM = 'hush-unlock-handoff-expiry'
 const HUSH_WEB_ORIGINS = new Set(['https://hush-password-manager.vercel.app'])
 const MAX_ARCHIVE_CHARACTERS = 50_000_000
 const MAX_STAGED_ARCHIVE_CHARACTERS = 4_000_000
@@ -37,10 +41,13 @@ const MAX_SECRET_LENGTH = 4096
 const FILL_AUTHORIZATION_TTL = 2 * 60_000
 const MULTI_STEP_TTL = 5 * 60_000
 const PENDING_CAPTURE_TTL = 10 * 60_000
+const AUTO_UPDATE_UNDO_TTL = 10 * 60_000
 const PENDING_CAPTURE_PREFIX = 'pendingCredentialCapture:'
 const MULTI_STEP_PREFIX = 'multiStepLoginContext:'
+const AUTO_UPDATE_UNDO_PREFIX = 'automaticUpdateUndo:'
 
 const fillAuthorizations = new Map()
+const captureCommitLocks = new Map()
 
 const storageReady = Promise.all([
   chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
@@ -105,16 +112,17 @@ async function removeTabState(prefix, tabId) {
 async function removeAllEphemeralTabState() {
   await storageReady
   const stored = await chrome.storage.session.get(null)
-  const keys = Object.keys(stored).filter((key) => key.startsWith(PENDING_CAPTURE_PREFIX) || key.startsWith(MULTI_STEP_PREFIX))
+  const keys = Object.keys(stored).filter((key) => key.startsWith(PENDING_CAPTURE_PREFIX) || key.startsWith(MULTI_STEP_PREFIX) || key.startsWith(AUTO_UPDATE_UNDO_PREFIX))
   if (keys.length) await chrome.storage.session.remove(keys)
 }
 
 async function clearSession() {
   await storageReady
-  await chrome.storage.session.remove([SESSION_KEY, PENDING_AUTH_KEY])
+  await chrome.storage.session.remove([SESSION_KEY, PENDING_AUTH_KEY, UNLOCK_HANDOFF_KEY])
   await removeAllEphemeralTabState()
-  await chrome.alarms.clear(AUTO_LOCK_ALARM)
+  await Promise.all([chrome.alarms.clear(AUTO_LOCK_ALARM), chrome.alarms.clear(UNLOCK_HANDOFF_ALARM)])
   fillAuthorizations.clear()
+  captureCommitLocks.clear()
 }
 
 function sessionPreferences(active) {
@@ -123,6 +131,7 @@ function sessionPreferences(active) {
     clipboardClearSeconds: Number(active?.payload?.preferences?.clipboardClearSeconds ?? 30),
     passwordHistoryLimit: Number(active?.payload?.preferences?.passwordHistoryLimit ?? 5),
     autofillSingleExact: active?.payload?.preferences?.autofillSingleExact === true,
+    autoUpdateExactPasswords: active?.payload?.preferences?.autoUpdateExactPasswords === true,
   }
 }
 
@@ -222,6 +231,65 @@ async function clearPendingArchive() {
   await chrome.action.setBadgeText({ text: '' })
 }
 
+async function readUnlockHandoff() {
+  await storageReady
+  const stored = await chrome.storage.session.get(UNLOCK_HANDOFF_KEY)
+  const handoff = stored[UNLOCK_HANDOFF_KEY]
+  if (!unlockHandoffIsValid(handoff)) {
+    if (handoff) await chrome.storage.session.remove(UNLOCK_HANDOFF_KEY)
+    return null
+  }
+  return handoff
+}
+
+async function storeUnlockHandoff(handoff) {
+  await storageReady
+  await chrome.storage.session.set({ [UNLOCK_HANDOFF_KEY]: handoff })
+  await chrome.alarms.create(UNLOCK_HANDOFF_ALARM, { when: handoff.createdAt + UNLOCK_HANDOFF_TTL })
+}
+
+async function removeUnlockHandoff() {
+  await storageReady
+  await chrome.storage.session.remove(UNLOCK_HANDOFF_KEY)
+  await chrome.alarms.clear(UNLOCK_HANDOFF_ALARM)
+}
+
+async function completeUnlockHandoff() {
+  const handoff = await readUnlockHandoff()
+  if (!handoff) return false
+  try {
+    const tab = await chrome.tabs.get(handoff.tabId)
+    if (!unlockHandoffMatchesTab(handoff, tab)) return false
+    const response = await chrome.tabs.sendMessage(handoff.tabId, {
+      action: 'resume-after-unlock',
+      requestId: handoff.requestId,
+      origin: handoff.origin,
+    }, { frameId: 0 })
+    return response?.ok === true
+  } catch {
+    return false
+  } finally {
+    await removeUnlockHandoff()
+  }
+}
+
+async function openUnlockSurface(windowId, requestId) {
+  try {
+    if (typeof chrome.action.openPopup !== 'function') throw new Error('Action popup unavailable.')
+    await chrome.action.openPopup({ windowId })
+    return 'action-popup'
+  } catch {
+    await chrome.windows.create({
+      url: chrome.runtime.getURL(`popup.html?handoff=${encodeURIComponent(requestId)}`),
+      type: 'popup',
+      width: 390,
+      height: 590,
+      focused: true,
+    })
+    return 'window'
+  }
+}
+
 async function stageAuthenticatedEnvelope(opened) {
   await storageReady
   await chrome.storage.session.set({
@@ -316,6 +384,18 @@ async function removeMultiStepContext(tabId) {
   await removeTabState(MULTI_STEP_PREFIX, tabId)
 }
 
+async function readAutomaticUpdateUndo(active, tabId) {
+  return readTabState(active, AUTO_UPDATE_UNDO_PREFIX, 'automatic-update-undo', tabId)
+}
+
+async function storeAutomaticUpdateUndo(active, tabId, value) {
+  await writeTabState(active, AUTO_UPDATE_UNDO_PREFIX, 'automatic-update-undo', tabId, value, AUTO_UPDATE_UNDO_TTL)
+}
+
+async function removeAutomaticUpdateUndo(tabId) {
+  await removeTabState(AUTO_UPDATE_UNDO_PREFIX, tabId)
+}
+
 function authorizeMatches(tabId, page, matches) {
   const now = Date.now()
   for (const [id, authorization] of fillAuthorizations) {
@@ -348,10 +428,82 @@ async function sendCredentialToPage(context, page, candidate, mode) {
   if (!response?.ok) throw new Error('The login fields changed before Hush could fill them.')
 }
 
+function pendingCaptureMutation(active, pending, now = new Date().toISOString()) {
+  const historyLimit = sessionPreferences(active).passwordHistoryLimit
+  if (pending.operation === 'update') {
+    const previousEntry = pending.credentialId && active.payload.items.find((entry) => entry.id === pending.credentialId)
+    if (!previousEntry) throw new Error('Hush could not identify the existing credential, so it did not overwrite anything.')
+    const updatedEntry = {
+      ...previousEntry,
+      username: pending.username || previousEntry.username,
+      passwordHistory: historyLimit > 0 && previousEntry.password !== pending.password
+        ? [{ password: previousEntry.password, changedAt: now }, ...(previousEntry.passwordHistory || [])].slice(0, historyLimit)
+        : (previousEntry.passwordHistory || []),
+      password: pending.password,
+      passwordChangedAt: now,
+      updatedAt: now,
+      revision: (previousEntry.revision || 1) + 1,
+      encryptionVersion: 2,
+    }
+    return {
+      previousEntry,
+      updatedEntry,
+      items: active.payload.items.map((entry) => entry.id === previousEntry.id ? updatedEntry : entry),
+    }
+  }
+  if (pending.operation !== 'save') throw new Error('Unsupported pending credential operation.')
+  const updatedEntry = {
+    id: crypto.randomUUID(),
+    name: pending.hostname,
+    username: pending.username,
+    password: pending.password,
+    url: pending.origin,
+    notes: 'Saved after user confirmation in the Hush extension.',
+    collection: 'Personal',
+    tags: [],
+    favorite: false,
+    createdAt: now,
+    updatedAt: now,
+    passwordChangedAt: now,
+    passwordHistory: [],
+    revision: 1,
+    encryptionVersion: 2,
+  }
+  return { previousEntry: null, updatedEntry, items: [updatedEntry, ...active.payload.items] }
+}
+
+async function commitPendingCapture(active, pending, mutation = pendingCaptureMutation(active, pending)) {
+  await replaceSessionEnvelope({ ...active.payload, items: mutation.items })
+  return mutation
+}
+
+function withTabCaptureLock(tabId, task) {
+  const previous = captureCommitLocks.get(tabId) || Promise.resolve()
+  const current = previous.catch(() => {}).then(task)
+  captureCommitLocks.set(tabId, current)
+  return current.finally(() => {
+    if (captureCommitLocks.get(tabId) === current) captureCommitLocks.delete(tabId)
+  })
+}
+
 async function handleContentMessage(message, context) {
   if (!actionAllowed('content', message.action)) throw new Error('Unknown or disallowed content-script action.')
+  if (message.action === 'request-unlock') {
+    const page = await trustedCurrentPage(context, message.pageUrl)
+    const handoff = createUnlockHandoff({
+      requestId: message.requestId,
+      tabId: context.tabId,
+      windowId: context.windowId,
+      pageUrl: page.href,
+    })
+    const active = await unlockedSession({ touch: false, allowMissing: true })
+    await storeUnlockHandoff(handoff)
+    if (active) return { ok: true, resumed: await completeUnlockHandoff() }
+    return { ok: true, opened: await openUnlockSurface(handoff.windowId, handoff.requestId) }
+  }
   if (message.action === 'request-credentials') {
-    const active = await unlockedSession()
+    const active = await unlockedSession({ allowMissing: true })
+    if (!active) return { ok: false, locked: true, error: 'Hush is locked.' }
     const page = await trustedCurrentPage(context, message.pageUrl)
     const matches = matchesForPage(active, page.href)
     const multiStep = await currentMultiStepContext(active, context.tabId, page.origin)
@@ -408,9 +560,36 @@ async function handleContentMessage(message, context) {
     return { ok: true }
   }
   if (message.action === 'generate-password') {
-    await unlockedSession()
-    await trustedCurrentPage(context, message.pageUrl)
-    return { ok: true, password: generatePassword() }
+    const page = await trustedCurrentPage(context, message.pageUrl)
+    const active = await unlockedSession()
+    const password = generatePassword()
+    const capture = message.capture
+    if (capture && ['registration', 'password-change'].includes(capture.kind)) {
+      const multiStep = await currentMultiStepContext(active, context.tabId, page.origin)
+      const username = safeText(capture.username || multiStep?.username, 512)
+      const currentPassword = safeSecret(capture.currentPassword)
+      const matches = matchesForPage(active, page.href)
+      const existing = existingCredentialForCapture(matches, {
+        kind: capture.kind,
+        username,
+        currentPassword,
+        credentialId: multiStep?.credentialId,
+      })
+      await storePendingCapture(active, context.tabId, {
+        status: 'generated',
+        source: 'generated',
+        kind: capture.kind,
+        operation: credentialCaptureOperation(existing, password),
+        origin: page.origin,
+        pageUrl: page.href,
+        hostname: page.hostname,
+        username,
+        password,
+        credentialId: existing?.entry.id || '',
+        createdAt: Date.now(),
+      })
+    }
+    return { ok: true, password }
   }
   if (message.action === 'stage-login-step') {
     const page = await trustedCurrentPage(context, message.pageUrl)
@@ -436,6 +615,7 @@ async function handleContentMessage(message, context) {
     const password = safeSecret(capture.password)
     const currentPassword = safeSecret(capture.currentPassword)
     if (!password) throw new Error('No password was captured.')
+    const generatedCandidate = await readPendingCapture(active, context.tabId)
     const matches = matchesForPage(active, page.href)
     const existing = existingCredentialForCapture(matches, {
       kind: capture.kind,
@@ -449,7 +629,25 @@ async function handleContentMessage(message, context) {
       clearFillAuthorizationsForTab(context.tabId)
       return { ok: true, staged: false, unchanged: true }
     }
+    const usernameMatches = username ? matches.filter(({ entry }) => entry.username === username) : []
+    const identifiedUnambiguously = Boolean(existing && (
+      (multiStep?.credentialId && existing.entry.id === multiStep.credentialId)
+      || usernameMatches.length === 1
+      || (!username && matches.length === 1)
+    ))
+    const automaticUpdateEligible = automaticPasswordUpdateEligible({
+      preferenceEnabled: true,
+      kind: capture.kind,
+      operation,
+      existing,
+      identifiedUnambiguously,
+      ambiguousForm: capture.ambiguousForm === true,
+    })
     await storePendingCapture(active, context.tabId, {
+      status: 'submitted',
+      source: generatedCandidate?.status === 'generated'
+        && generatedCandidate.origin === page.origin
+        && generatedCandidate.password === password ? 'generated' : 'typed',
       kind: capture.kind,
       operation,
       origin: page.origin,
@@ -458,6 +656,7 @@ async function handleContentMessage(message, context) {
       username,
       password,
       credentialId: existing?.entry.id || '',
+      automaticUpdateEligible,
       createdAt: Date.now(),
     })
     await removeMultiStepContext(context.tabId)
@@ -465,64 +664,75 @@ async function handleContentMessage(message, context) {
     return { ok: true, staged: true, operation }
   }
   if (message.action === 'page-ready') {
-    const page = await trustedCurrentPage(context, message.pageUrl)
-    const active = await unlockedSession({ touch: false })
-    const pending = await readPendingCapture(active, context.tabId)
-    if (!pending || pending.origin !== page.origin) {
-      if (pending) await removePendingCapture(context.tabId)
-      return { ok: true, pending: null }
-    }
-    if (message.failureEvidence === true) return { ok: true, pending: null, awaitingSuccess: true }
-    if (page.href === pending.pageUrl && message.successEvidence !== true) return { ok: true, pending: null, awaitingSuccess: true }
-    return { ok: true, pending: { kind: pending.kind, operation: pending.operation, hostname: pending.hostname, username: pending.username } }
+    return withTabCaptureLock(context.tabId, async () => {
+      const page = await trustedCurrentPage(context, message.pageUrl)
+      const active = await unlockedSession({ touch: false })
+      const pending = await readPendingCapture(active, context.tabId)
+      if (!pending || pending.origin !== page.origin) {
+        if (pending) await removePendingCapture(context.tabId)
+        return { ok: true, pending: null }
+      }
+      if (pending.status !== 'submitted') return { ok: true, pending: null, awaitingSuccess: true }
+      if (message.failureEvidence === true) {
+        await removePendingCapture(context.tabId)
+        return { ok: true, pending: null, captureRejected: true }
+      }
+      if (page.href === pending.pageUrl && message.successEvidence !== true) return { ok: true, pending: null, awaitingSuccess: true }
+      if (pending.automaticUpdateEligible === true
+        && sessionPreferences(active).autoUpdateExactPasswords === true
+        && message.successEvidence === true) {
+        const mutation = pendingCaptureMutation(active, pending)
+        const undo = createAutomaticUpdateUndo(mutation.previousEntry, mutation.updatedEntry, {
+          origin: pending.origin,
+          hostname: pending.hostname,
+        })
+        await storeAutomaticUpdateUndo(active, context.tabId, undo)
+        try {
+          await commitPendingCapture(active, pending, mutation)
+        } catch (error) {
+          await removeAutomaticUpdateUndo(context.tabId)
+          throw error
+        }
+        await Promise.all([removePendingCapture(context.tabId), removeMultiStepContext(context.tabId)])
+        return {
+          ok: true,
+          pending: null,
+          autoUpdated: { hostname: pending.hostname, username: pending.username, canUndo: true },
+        }
+      }
+      return { ok: true, pending: { kind: pending.kind, operation: pending.operation, hostname: pending.hostname, username: pending.username } }
+    })
+  }
+  if (message.action === 'undo-auto-update') {
+    return withTabCaptureLock(context.tabId, async () => {
+      const active = await unlockedSession()
+      const page = await trustedCurrentPage(context, message.pageUrl)
+      const undo = await readAutomaticUpdateUndo(active, context.tabId)
+      if (!undo || undo.origin !== page.origin) throw new Error('That automatic update can no longer be undone.')
+      const current = active.payload.items.find((entry) => entry.id === undo.credentialId)
+      const restored = restoreAutomaticUpdate(current, undo)
+      const items = active.payload.items.map((entry) => entry.id === restored.id ? restored : entry)
+      await replaceSessionEnvelope({ ...active.payload, items })
+      await removeAutomaticUpdateUndo(context.tabId)
+      return { ok: true }
+    })
   }
   if (message.action === 'discard-pending') {
-    await Promise.all([removePendingCapture(context.tabId), removeMultiStepContext(context.tabId)])
-    return { ok: true }
+    return withTabCaptureLock(context.tabId, async () => {
+      await Promise.all([removePendingCapture(context.tabId), removeMultiStepContext(context.tabId)])
+      return { ok: true }
+    })
   }
   if (message.action === 'save-pending') {
-    const active = await unlockedSession()
-    const page = await trustedCurrentPage(context, message.pageUrl)
-    const pending = await readPendingCapture(active, context.tabId)
-    if (!pending || pending.origin !== page.origin) throw new Error('That pending credential expired.')
-    const now = new Date().toISOString()
-    const historyLimit = sessionPreferences(active).passwordHistoryLimit
-    let items
-    if (pending.operation === 'update') {
-      const existing = pending.credentialId && active.payload.items.find((entry) => entry.id === pending.credentialId)
-      if (!existing) throw new Error('Hush could not identify the existing credential, so it did not overwrite anything.')
-      items = active.payload.items.map((entry) => entry.id === existing.id ? {
-        ...entry,
-        username: pending.username || entry.username,
-        passwordHistory: historyLimit > 0 && entry.password !== pending.password ? [{ password: entry.password, changedAt: now }, ...(entry.passwordHistory || [])].slice(0, historyLimit) : (entry.passwordHistory || []),
-        password: pending.password,
-        passwordChangedAt: now,
-        updatedAt: now,
-        revision: (entry.revision || 1) + 1,
-        encryptionVersion: 2,
-      } : entry)
-    } else {
-      items = [{
-        id: crypto.randomUUID(),
-        name: pending.hostname,
-        username: pending.username,
-        password: pending.password,
-        url: pending.origin,
-        notes: 'Saved after user confirmation in the Hush extension.',
-        collection: 'Personal',
-        tags: [],
-        favorite: false,
-        createdAt: now,
-        updatedAt: now,
-        passwordChangedAt: now,
-        passwordHistory: [],
-        revision: 1,
-        encryptionVersion: 2,
-      }, ...active.payload.items]
-    }
-    await replaceSessionEnvelope({ ...active.payload, items })
-    await Promise.all([removePendingCapture(context.tabId), removeMultiStepContext(context.tabId)])
-    return { ok: true }
+    return withTabCaptureLock(context.tabId, async () => {
+      const active = await unlockedSession()
+      const page = await trustedCurrentPage(context, message.pageUrl)
+      const pending = await readPendingCapture(active, context.tabId)
+      if (!pending || pending.origin !== page.origin || pending.status !== 'submitted') throw new Error('That pending credential expired.')
+      await commitPendingCapture(active, pending)
+      await Promise.all([removePendingCapture(context.tabId), removeMultiStepContext(context.tabId)])
+      return { ok: true }
+    })
   }
   throw new Error('Unknown content-script action.')
 }
@@ -532,6 +742,7 @@ async function handleExtensionMessage(message) {
   if (message.action === 'status') {
     const envelope = await readStoredEnvelope()
     const active = await unlockedSession({ touch: false, allowMissing: true })
+    const unlockHandoff = active ? null : await readUnlockHandoff()
     return {
       ok: true,
       hasVault: Boolean(envelope),
@@ -539,6 +750,7 @@ async function handleExtensionMessage(message) {
       format: envelope?.format || '',
       itemCount: active?.payload?.items?.length || 0,
       preferences: active ? sessionPreferences(active) : null,
+      unlockHandoff: unlockHandoff ? { hostname: unlockHandoff.hostname } : null,
       externalArchiveWaiting: Boolean(await readPendingArchive()),
     }
   }
@@ -548,7 +760,8 @@ async function handleExtensionMessage(message) {
     const opened = await openEnvelope(safeSecret(message.password), envelope)
     if (opened.migrated) await storeEnvelope(opened.envelope)
     await storeUnlockedSession(opened)
-    return { ok: true, itemCount: opened.payload.items.length, migrated: Boolean(opened.migrated), archive: serializeEnvelope(opened.envelope), payload: opened.payload }
+    const resumed = await completeUnlockHandoff()
+    return { ok: true, itemCount: opened.payload.items.length, migrated: Boolean(opened.migrated), archive: serializeEnvelope(opened.envelope), payload: opened.payload, resumed }
   }
   if (message.action === 'lock') {
     await clearSession()
@@ -573,7 +786,7 @@ async function handleExtensionMessage(message) {
     const payload = message.payload ? validatePayload(message.payload) : {
       schemaVersion: 2,
       items: [],
-      preferences: { autoLockMinutes: 15, clipboardClearSeconds: 30, passwordHistoryLimit: 5, autofillSingleExact: false },
+      preferences: { autoLockMinutes: 15, clipboardClearSeconds: 30, passwordHistoryLimit: 5, autofillSingleExact: false, autoUpdateExactPasswords: false },
     }
     const created = await createVaultEnvelope(password, payload, { includeSessionKeyMaterial: true })
     await storeEnvelope(created.envelope)
@@ -687,6 +900,10 @@ async function handleExtensionMessage(message) {
       if (typeof message.settings.autofillSingleExact !== 'boolean') throw new Error('Invalid autofill setting.')
       preferences.autofillSingleExact = message.settings.autofillSingleExact
     }
+    if (message.settings?.autoUpdateExactPasswords !== undefined) {
+      if (typeof message.settings.autoUpdateExactPasswords !== 'boolean') throw new Error('Invalid automatic-update setting.')
+      preferences.autoUpdateExactPasswords = message.settings.autoUpdateExactPasswords
+    }
     await replaceSessionEnvelope({ ...active.payload, preferences })
     return { ok: true, preferences }
   }
@@ -769,6 +986,10 @@ chrome.idle.onStateChanged.addListener((state) => {
   if (state === 'locked') void clearSession()
 })
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === UNLOCK_HANDOFF_ALARM) {
+    void removeUnlockHandoff()
+    return
+  }
   if (alarm.name !== AUTO_LOCK_ALARM) return
   void (async () => {
     const record = await readSessionRecord()
@@ -780,21 +1001,33 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (!changeInfo.url) return
   clearFillAuthorizationsForTab(tabId)
   void (async () => {
+    const handoff = await readUnlockHandoff()
+    if (handoff?.tabId === tabId) await removeUnlockHandoff()
     let nextOrigin = ''
     try { nextOrigin = new URL(changeInfo.url).origin } catch {}
     const active = await unlockedSession({ touch: false, allowMissing: true })
     if (!active) return
-    const [multiStep, pending] = await Promise.all([
+    const [multiStep, pending, undo] = await Promise.all([
       readTabState(active, MULTI_STEP_PREFIX, 'multi-step-login', tabId),
       readPendingCapture(active, tabId),
+      readAutomaticUpdateUndo(active, tabId),
     ])
     const removals = []
     if (multiStep && multiStep.origin !== nextOrigin) removals.push(removeMultiStepContext(tabId))
     if (pending && pending.origin !== nextOrigin) removals.push(removePendingCapture(tabId))
+    if (undo && undo.origin !== nextOrigin) removals.push(removeAutomaticUpdateUndo(tabId))
     await Promise.all(removals)
   })().catch(() => {})
 })
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearFillAuthorizationsForTab(tabId)
-  void Promise.all([removeMultiStepContext(tabId), removePendingCapture(tabId)]).catch(() => {})
+  void (async () => {
+    const handoff = await readUnlockHandoff()
+    await Promise.all([
+      removeMultiStepContext(tabId),
+      removePendingCapture(tabId),
+      removeAutomaticUpdateUndo(tabId),
+      handoff?.tabId === tabId ? removeUnlockHandoff() : Promise.resolve(),
+    ])
+  })().catch(() => {})
 })

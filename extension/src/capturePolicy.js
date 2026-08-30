@@ -11,6 +11,10 @@ export function existingCredentialForCapture(matches, { kind, username, currentP
     const usernameMatches = matches.filter(({ entry }) => entry.username === username)
     if (usernameMatches.length === 1) return usernameMatches[0]
   }
+  if (!username && matches.length === 1) {
+    const [onlyMatch] = matches
+    if (onlyMatch.match?.fillable && onlyMatch.match.matchType === 'exact') return onlyMatch
+  }
   return null
 }
 

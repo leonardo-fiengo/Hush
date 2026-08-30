@@ -32,7 +32,7 @@ New vaults use:
 - an authenticated v2 format containing KDF parameters, revision/sync data, wrapped keys, ciphertext, and integrity metadata;
 - authenticated migration from the previous PBKDF2 v1 format.
 
-Master-password changes rewrap the same DEK rather than re-encrypting every credential. The master password, raw DEK, generated passwords, and vault plaintext are never persisted or transmitted. Usable Web Crypto keys are non-extractable and references are discarded when Hush locks.
+Master-password changes rewrap the same DEK rather than re-encrypting every credential. The master password, raw DEK, generated passwords, and vault plaintext are never persisted in plaintext or transmitted. A newly generated password may exist briefly as purpose-bound DEK ciphertext in trusted browser-session storage so service-worker sleep cannot lose it. Usable Web Crypto keys are non-extractable and references are discarded when Hush locks.
 
 Run the machine-specific KDF benchmark with:
 
@@ -73,14 +73,16 @@ The extension:
 - provides the full Hush dashboard as the packaged `vault.html` extension page, backed by the same vault used for autofill;
 - keeps only DEK session material and expiry metadata in in-memory `chrome.storage.session`, never the master password or plaintext vault;
 - survives normal Manifest V3 service-worker suspension without prompting again;
+- when locked, keeps focus UI quiet and lets an explicit inline click open trusted extension-owned unlock UI, then resumes only the same live field after a successful unlock;
 - locks on manual request, configured Hush inactivity, device lock, extension reload/update, or browser-profile restart;
 - receives persistent HTTPS host access at install, runs a static top-frame content script on normal HTTPS pages, excludes the hosted Hush origin, and requests no browsing-history permission;
 - validates sender ID, sender URL/origin, top-frame ID, top-tab URL, a short-lived suggestion authorization, and the exact live tab URL immediately before fill;
 - keeps exact hostname and port matches strongest and allows manual, labeled same-registrable-domain suggestions through `tldts` private-suffix/IDN-aware parsing;
 - blocks HTTPS credentials on HTTP and refuses IDN filling by default;
 - automatically presents matching accounts on focus, supports an opt-in single exact-match autofill setting, and never silently chooses among multiple or same-site accounts;
-- detects normal, dynamic, React-style, login, registration, multi-step, and password-change fields, including open Shadow DOM;
-- offers click-to-generate registration/change passwords, keeps short-lived multi-step and pending-save state DEK-encrypted in trusted browser-session storage, recognizes changed saved passwords, and preserves the old password until the user confirms success;
+- detects normal, dynamic, React-style, login, registration, multi-step, and password-change fields, including open Shadow DOM, autocomplete token lists, form-associated controls, and passwords temporarily revealed as text;
+- offers click-to-generate registration/change passwords, keeps generated, multi-step, pending-save, and Undo state DEK-encrypted with short TTLs in trusted browser-session storage, validates confirmation fields, and recognizes changed and password-only saved logins conservatively;
+- optionally updates a uniquely identified exact-host login after strong success evidence, never auto-updates ambiguous or same-site matches, and shows a quiet short-lived Undo notice; otherwise the old password remains untouched until the user confirms Update;
 - contains no remotely loaded code or custom updater.
 
 The production web origin in `extension/manifest.json` must be verified before store publication. Configure the final browser-store ID as `VITE_HUSH_EXTENSION_ID` in the production web build. The extension can also bootstrap migration by opening the website with its own ID. Until the published ID is configured, use an authenticated `.hush` handoff.
